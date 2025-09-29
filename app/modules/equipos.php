@@ -1,5 +1,5 @@
 <?php
-// app/modules/equipos.php
+// app/modules/equipos.php — Inventario operativo con kardex
 require_once __DIR__.'/../core/db.php';
 require_once __DIR__.'/../core/helpers.php';
 require_once __DIR__.'/../core/ui.php';
@@ -7,126 +7,97 @@ require_once __DIR__.'/../core/auth.php';
 
 require_login();
 
-/**
- * Auto-migraciones suaves para robustez:
- * - agrega columna eliminado a equipos
- * - normaliza longitudes de columnas usadas
- */
-function equipos_ensure_schema() {
-  try { q("ALTER TABLE equipos ADD COLUMN IF NOT EXISTS eliminado TINYINT(1) NOT NULL DEFAULT 0"); } catch(Exception $e){}
-  // Asegurar estatus con default si aplica (MariaDB permite IF NOT EXISTS en ADD COLUMN desde 10.3+)
-  try { q("ALTER TABLE equipos ADD COLUMN IF NOT EXISTS ubicacion VARCHAR(50) DEFAULT NULL"); } catch(Exception $e){}
-  // No rompemos tu PK: id_equipo es VARCHAR(50) y es la clave natural.
-}
-equipos_ensure_schema();
-
-/** Pequeños helpers */
-function __equipos_personal() {
-  return qall("SELECT id_personal, CONCAT(nombre,' ',apellido_p,' ',apellido_m) AS nombre
-               FROM futuro_personal
-               WHERE COALESCE(estatus,'') NOT IN ('baja','inactivo')
-               ORDER BY nombre ASC");
-}
-function __servicio_exists($id_servicio) {
-  return (bool) qone("SELECT 1 FROM servicios WHERE id_servicio=?", [(int)$id_servicio]);
-}
-
 $action = $action ?? 'listar';
+$roles = ['administradora','auxiliar'];
+require_role($roles);
+
+function equipos_find($id_equipo) {
+  return qone("SELECT * FROM equipos WHERE id_equipo=? AND COALESCE(eliminado,0)=0", [$id_equipo]);
+}
+
+function equipos_movimientos($id_equipo): array {
+  return qall("SELECT tipo, id_servicio, origen, destino, notas, created_at
+               FROM equipos_movimientos WHERE id_equipo=? ORDER BY id_mov DESC", [$id_equipo]);
+}
+
+function equipos_log(string $accion, array $payload=[]): void {
+  $user = current_user();
+  $detalle = json_encode(array_merge(['accion'=>$accion], $payload), JSON_UNESCAPED_UNICODE);
+  try {
+    q("INSERT INTO futuro_logs (tabla, accion, usuario, detalle, created_at) VALUES ('equipos', ?, ?, ?, CURRENT_TIMESTAMP())",
+      [$accion, $user['usuario'] ?? 'sistema', $detalle]);
+  } catch (Exception $e) {}
+}
+
+function equipos_registrar_mov(PDO $pdo, string $id_equipo, string $tipo, ?int $id_servicio=null, ?string $origen=null, ?string $destino=null, ?string $notas=null): void {
+  $stmt = $pdo->prepare("INSERT INTO equipos_movimientos (id_equipo,tipo,id_servicio,origen,destino,notas) VALUES (?,?,?,?,?,?)");
+  $stmt->execute([$id_equipo,$tipo,$id_servicio,$origen,$destino,$notas]);
+}
+
+function servicio_exists($id_servicio): bool {
+  if ($id_servicio <=0) return false;
+  return (bool) qone("SELECT 1 FROM servicios WHERE id_servicio=? AND COALESCE(eliminado,0)=0", [$id_servicio]);
+}
+
+$adminOnly = ['nuevo','guardar','editar','actualizar','baja'];
+if (in_array($action, $adminOnly, true)) {
+  require_role(['administradora']);
+}
 
 switch ($action) {
-
-/* =========================================================
- * LISTAR + BUSCADOR EN VIVO + FILTRO ESTATUS
- * =======================================================*/
 case 'listar':
   $q = trim($_GET['q'] ?? '');
-  $est = trim($_GET['est'] ?? 'todos'); // disponible | asignado | mantenimiento | baja | todos
-
-  $where = "eliminado=0";
+  $estatus = trim($_GET['est'] ?? 'todos');
+  $where = ['COALESCE(eliminado,0)=0'];
   $params = [];
-
-  if ($est !== '' && $est !== 'todos') {
-    $where .= " AND estatus = ?";
-    $params[] = $est;
+  if ($estatus !== '' && $estatus !== 'todos') {
+    $where[] = "estatus = ?";
+    $params[] = $estatus;
   }
-
   if ($q !== '') {
     $like = '%'.$q.'%';
-    $where .= " AND (id_equipo LIKE ? OR equipo LIKE ? OR ubicacion LIKE ?)";
-    array_push($params, $like, $like, $like);
+    $where[] = "(id_equipo LIKE ? OR equipo LIKE ? OR ubicacion LIKE ?)";
+    array_push($params,$like,$like,$like);
   }
-
-  $rows = qall("
-    SELECT id_equipo, equipo, estatus, COALESCE(ubicacion,'') AS ubicacion,
-           DATE(updated_at) AS actualizado
-    FROM equipos
-    WHERE $where
-    ORDER BY equipo ASC
-    LIMIT 500
-  ", $params);
-
+  $rows = qall("SELECT id_equipo, equipo, estatus, ubicacion, DATE(updated_at) AS actualizado
+                FROM equipos WHERE ".implode(' AND ', $where)."
+                ORDER BY equipo ASC LIMIT 300", $params);
   ob_start(); ?>
   <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-2 mb-3">
-    <h1 class="h4 m-0">Equipos</h1>
-    <div class="d-flex gap-2">
+    <h1 class="h4 m-0">Equipos operativos</h1>
+    <?php if (user_has_role('administradora')): ?>
       <a href="?r=equipos.nuevo" class="btn btn-success btn-sm">Nuevo equipo</a>
-    </div>
+    <?php endif; ?>
   </div>
 
-  <div class="row g-2 align-items-center mb-2">
-    <div class="col-md-5">
-      <input id="eqSearch" type="search" class="form-control" placeholder="Buscar por código, nombre o ubicación..." value="<?= e($q) ?>">
+  <form class="row g-2 mb-3" method="get">
+    <input type="hidden" name="r" value="equipos.listar">
+    <div class="col-md-4"><?= form_input('q','Buscar',$q,['placeholder'=>'Código o nombre']) ?></div>
+    <div class="col-md-4"><?= form_select('est','Estatus',['todos'=>'Todos','disponible'=>'Disponible','asignado'=>'Asignado','mantenimiento'=>'Mantenimiento','baja'=>'Baja'],$estatus,['class'=>'form-select']) ?></div>
+    <div class="col-md-2 d-grid">
+      <button class="btn btn-outline-primary">Filtrar</button>
     </div>
-    <div class="col-md-4">
-      <select id="eqEst" class="form-select">
-        <?php
-          $opts = ['todos'=>'Todos','disponible'=>'Disponible','asignado'=>'Asignado','mantenimiento'=>'Mantenimiento','baja'=>'Baja'];
-          foreach($opts as $k=>$v): ?>
-          <option value="<?= $k ?>" <?= $est===$k?'selected':'' ?>><?= $v ?></option>
-        <?php endforeach; ?>
-      </select>
-    </div>
-    <div class="col-md-3 text-md-end small text-muted">
-      <?= count($rows) ?> resultado<?= count($rows)===1?'':'s' ?>
-    </div>
-  </div>
+  </form>
 
   <div class="table-responsive">
-    <table class="table table-striped table-hover table-sm">
-      <thead>
-        <tr>
-          <th>Código</th>
-          <th>Equipo</th>
-          <th>Estatus</th>
-          <th>Ubicación</th>
-          <th>Actualizado</th>
-          <th style="width:260px">Herramientas</th>
-        </tr>
-      </thead>
+    <table class="table table-striped table-hover table-sm align-middle">
+      <thead><tr><th>Código</th><th>Equipo</th><th>Estatus</th><th>Ubicación</th><th>Actualizado</th><th style="width:230px">Acciones</th></tr></thead>
       <tbody>
-        <?php foreach($rows as $r): ?>
+        <?php foreach ($rows as $r): ?>
         <tr>
           <td><code><?= e($r['id_equipo']) ?></code></td>
           <td><?= e($r['equipo']) ?></td>
-          <td>
-            <?php
-              $badge = 'bg-secondary';
-              if ($r['estatus']==='disponible') $badge='bg-success';
-              elseif ($r['estatus']==='asignado') $badge='bg-warning';
-              elseif ($r['estatus']==='mantenimiento') $badge='bg-info';
-              elseif ($r['estatus']==='baja') $badge='bg-dark';
-            ?>
-            <span class="badge <?= $badge ?>"><?= e($r['estatus']) ?></span>
-          </td>
+          <td><span class="badge bg-<?= $r['estatus']==='disponible'?'success':($r['estatus']==='asignado'?'warning text-dark':($r['estatus']==='mantenimiento'?'info text-dark':'secondary')) ?>"><?= e($r['estatus']) ?></span></td>
           <td><?= e($r['ubicacion'] ?: '—') ?></td>
-          <td><?= e($r['actualizado']) ?></td>
+          <td><?= e($r['actualizado'] ?: '—') ?></td>
           <td class="d-flex flex-wrap gap-2">
-            <a class="btn btn-outline-primary btn-sm" href="?r=equipos.editar&id_equipo=<?= urlencode($r['id_equipo']) ?>">Editar</a>
-            <a class="btn btn-outline-secondary btn-sm" href="?r=equipos.asignar&id_equipo=<?= urlencode($r['id_equipo']) ?>">Asignar a servicio</a>
-            <a class="btn btn-outline-success btn-sm" href="?r=equipos.retornar&id_equipo=<?= urlencode($r['id_equipo']) ?>">Retornar</a>
-            <a class="btn btn-outline-danger btn-sm"
-               href="?r=equipos.baja&id_equipo=<?= urlencode($r['id_equipo']) ?>&q=<?= urlencode($q) ?>&est=<?= urlencode($est) ?>"
-               onclick="return confirm('¿Dar de baja lógica este equipo?');">Borrar</a>
+            <a class="btn btn-outline-secondary btn-sm" href="?r=equipos.historial&id_equipo=<?= urlencode($r['id_equipo']) ?>">Kardex</a>
+            <?php if (user_has_role('administradora')): ?>
+              <a class="btn btn-outline-primary btn-sm" href="?r=equipos.editar&id_equipo=<?= urlencode($r['id_equipo']) ?>">Editar</a>
+              <a class="btn btn-outline-danger btn-sm" href="?r=equipos.baja&id_equipo=<?= urlencode($r['id_equipo']) ?>" onclick="return confirm('¿Dar de baja lógica este equipo?');">Baja</a>
+            <?php endif; ?>
+            <a class="btn btn-outline-success btn-sm" href="?r=equipos.asignar&id_equipo=<?= urlencode($r['id_equipo']) ?>">Asignar</a>
+            <a class="btn btn-outline-info btn-sm" href="?r=equipos.retornar&id_equipo=<?= urlencode($r['id_equipo']) ?>">Retornar</a>
           </td>
         </tr>
         <?php endforeach; ?>
@@ -136,328 +107,279 @@ case 'listar':
       </tbody>
     </table>
   </div>
-
-  <script>
-    (function(){
-      const qEl = document.getElementById('eqSearch');
-      const eEl = document.getElementById('eqEst');
-      let t=null;
-      function go(){
-        const q = qEl.value.trim();
-        const est = eEl.value;
-        let url = "?r=equipos.listar";
-        if (est) url += "&est="+encodeURIComponent(est);
-        if (q)   url += "&q="+encodeURIComponent(q);
-        window.location = url;
-      }
-      qEl.addEventListener('keyup', function(ev){
-        if (ev.key==='Enter'){ go(); return; }
-        clearTimeout(t); t=setTimeout(go, 350);
-      });
-      qEl.addEventListener('keydown', function(ev){
-        if (ev.key==='Escape'){ qEl.value=''; go(); }
-      });
-      eEl.addEventListener('change', go);
-    })();
-  </script>
   <?php
   render('Equipos', ob_get_clean());
-break;
+  break;
 
-/* =========================================================
- * NUEVO
- * =======================================================*/
 case 'nuevo':
   ob_start(); ?>
   <div class="card shadow-sm">
     <div class="card-body">
       <h1 class="h5 mb-3">Nuevo equipo</h1>
       <form method="post" action="?r=equipos.guardar">
-        <?= form_input('id_equipo','Código / Placa *','', ['required'=>true, 'maxlength'=>50]) ?>
-        <?= form_input('equipo','Nombre del equipo *','', ['required'=>true, 'maxlength'=>50]) ?>
-        <div class="row g-2">
-          <div class="col-md-6">
-            <?= form_select('estatus','Estatus',[
-              'disponible'=>'Disponible',
-              'asignado'=>'Asignado',
-              'mantenimiento'=>'Mantenimiento',
-              'baja'=>'Baja'
-            ], 'disponible') ?>
-          </div>
-          <div class="col-md-6"><?= form_input('ubicacion','Ubicación','') ?></div>
+        <?= csrf_field() ?>
+        <?= form_input('id_equipo','Código *','',['required'=>true,'maxlength'=>50]) ?>
+        <?= form_input('equipo','Nombre *','',['required'=>true,'maxlength'=>100]) ?>
+        <?= form_select('estatus','Estatus inicial',['disponible'=>'Disponible','mantenimiento'=>'Mantenimiento'],'disponible',['class'=>'form-select']) ?>
+        <?= form_input('ubicacion','Ubicación','') ?>
+        <?= form_input('foto','Foto (ruta opcional)','') ?>
+        <div class="d-flex gap-2 mt-3">
+          <button class="btn btn-primary">Guardar</button>
+          <a class="btn btn-light" href="?r=equipos.listar">Cancelar</a>
         </div>
-        <?= form_input('foto','Foto (ruta/archivo opcional)','') ?>
-        <button class="btn btn-primary mt-2">Guardar</button>
-        <a class="btn btn-light mt-2" href="?r=equipos.listar">Cancelar</a>
       </form>
     </div>
   </div>
   <?php
   render('Nuevo equipo', ob_get_clean());
-break;
+  break;
 
-/* =========================================================
- * GUARDAR (POST)
- * =======================================================*/
 case 'guardar':
-  $id   = trim($_POST['id_equipo'] ?? '');
-  $nom  = trim($_POST['equipo'] ?? '');
-  $est  = trim($_POST['estatus'] ?? 'disponible');
-  $ubi  = trim($_POST['ubicacion'] ?? '');
-  $foto = trim($_POST['foto'] ?? '');
-
-  if ($id==='' || $nom==='') {
-    $_SESSION['_alerts'] = "<div class='alert alert-danger'>Código y nombre son obligatorios.</div>";
+  try { csrf_verify(); } catch (RuntimeException $e) { flash("<div class='alert alert-danger'>Sesión inválida.</div>"); redirect('equipos.nuevo'); }
+  $id_equipo = trim($_POST['id_equipo'] ?? '');
+  $equipo = trim($_POST['equipo'] ?? '');
+  $estatus = trim($_POST['estatus'] ?? 'disponible');
+  $ubicacion = trim($_POST['ubicacion'] ?? '');
+  $foto = trim($_POST['foto'] ?? '') ?: null;
+  if ($id_equipo==='' || $equipo==='') {
+    flash("<div class='alert alert-danger'>Código y nombre son obligatorios.</div>");
     redirect('equipos.nuevo');
   }
-
-  $dup = qone("SELECT 1 FROM equipos WHERE id_equipo=?", [$id]);
-  if ($dup) {
-    $_SESSION['_alerts'] = "<div class='alert alert-warning'>Ya existe un equipo con ese código.</div>";
-    redirect('equipos.nuevo');
+  $pdo = db();
+  try {
+    $pdo->beginTransaction();
+    q("INSERT INTO equipos (id_equipo, equipo, estatus, ubicacion, foto, eliminado, updated_at)
+       VALUES (?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP())",
+      [$id_equipo,$equipo,$estatus,$ubicacion,$foto]);
+    equipos_registrar_mov($pdo,$id_equipo,'alta',null,null,null,'Registro inicial');
+    equipos_log('alta',['id_equipo'=>$id_equipo]);
+    $pdo->commit();
+    flash("<div class='alert alert-success'>Equipo registrado.</div>");
+  } catch (Exception $e) {
+    if ($pdo->inTransaction()) $pdo->rollBack();
+    flash("<div class='alert alert-danger'>No se pudo guardar el equipo.</div>");
   }
-
-  q("INSERT INTO equipos (id_equipo, equipo, estatus, foto, ubicacion, updated_at, eliminado)
-     VALUES (?, ?, ?, ?, ?, CURRENT_DATE(), 0)", [$id, $nom, $est, ($foto?:null), ($ubi?:null)]);
-
-  $_SESSION['_alerts'] = "<div class='alert alert-success'>Equipo creado.</div>";
   redirect('equipos.listar');
-break;
+  break;
 
-/* =========================================================
- * EDITAR
- * =======================================================*/
 case 'editar':
   $id = trim($_GET['id_equipo'] ?? '');
-  $r  = qone("SELECT * FROM equipos WHERE id_equipo=? AND eliminado=0", [$id]);
-  if (!$r) {
-    $_SESSION['_alerts'] = "<div class='alert alert-warning'>Equipo no encontrado.</div>";
+  $eq = equipos_find($id);
+  if (!$eq) {
+    flash("<div class='alert alert-warning'>Equipo no encontrado.</div>");
     redirect('equipos.listar');
   }
-
   ob_start(); ?>
   <div class="card shadow-sm">
     <div class="card-body">
-      <h1 class="h5 mb-3">Editar equipo <code><?= e($r['id_equipo']) ?></code></h1>
-      <form method="post" action="?r=equipos.actualizar&id_equipo=<?= urlencode($r['id_equipo']) ?>">
-        <?= form_input('equipo','Nombre del equipo *',$r['equipo'], ['required'=>true]) ?>
-        <div class="row g-2">
-          <div class="col-md-6">
-            <?= form_select('estatus','Estatus',[
-              'disponible'=>'Disponible',
-              'asignado'=>'Asignado',
-              'mantenimiento'=>'Mantenimiento',
-              'baja'=>'Baja'
-            ], $r['estatus']) ?>
-          </div>
-          <div class="col-md-6"><?= form_input('ubicacion','Ubicación',$r['ubicacion'] ?? '') ?></div>
+      <h1 class="h5 mb-3">Editar equipo <?= e($eq['id_equipo']) ?></h1>
+      <form method="post" action="?r=equipos.actualizar&id_equipo=<?= urlencode($eq['id_equipo']) ?>">
+        <?= csrf_field() ?>
+        <?= form_input('equipo','Nombre',$eq['equipo'],['required'=>true]) ?>
+        <?= form_select('estatus','Estatus',['disponible'=>'Disponible','asignado'=>'Asignado','mantenimiento'=>'Mantenimiento','baja'=>'Baja'],$eq['estatus'],['class'=>'form-select']) ?>
+        <?= form_input('ubicacion','Ubicación',$eq['ubicacion'] ?? '') ?>
+        <?= form_input('foto','Foto',$eq['foto'] ?? '') ?>
+        <div class="d-flex gap-2 mt-3">
+          <button class="btn btn-primary">Actualizar</button>
+          <a class="btn btn-light" href="?r=equipos.listar">Cancelar</a>
         </div>
-        <?= form_input('foto','Foto (ruta/archivo)',$r['foto'] ?? '') ?>
-        <button class="btn btn-primary mt-2">Actualizar</button>
-        <a class="btn btn-light mt-2" href="?r=equipos.listar">Cancelar</a>
       </form>
     </div>
   </div>
   <?php
   render('Editar equipo', ob_get_clean());
-break;
+  break;
 
-/* =========================================================
- * ACTUALIZAR (POST)
- * =======================================================*/
 case 'actualizar':
-  $id  = trim($_GET['id_equipo'] ?? '');
-  $nom = trim($_POST['equipo'] ?? '');
-  $est = trim($_POST['estatus'] ?? 'disponible');
-  $ubi = trim($_POST['ubicacion'] ?? '');
-  $foto= trim($_POST['foto'] ?? '');
-
-  if ($id==='' || $nom==='') {
-    $_SESSION['_alerts'] = "<div class='alert alert-danger'>Datos incompletos.</div>";
+  try { csrf_verify(); } catch (RuntimeException $e) { flash("<div class='alert alert-danger'>Sesión inválida.</div>"); redirect('equipos.listar'); }
+  $id = trim($_GET['id_equipo'] ?? '');
+  $eq = equipos_find($id);
+  if (!$eq) {
+    flash("<div class='alert alert-warning'>Equipo no encontrado.</div>");
     redirect('equipos.listar');
   }
-
-  q("UPDATE equipos
-     SET equipo=?, estatus=?, ubicacion=?, foto=?, updated_at=CURRENT_DATE()
-     WHERE id_equipo=? AND eliminado=0",
-     [$nom, $est, ($ubi?:null), ($foto?:null), $id]);
-
-  $_SESSION['_alerts'] = "<div class='alert alert-success'>Equipo actualizado.</div>";
+  $equipo = trim($_POST['equipo'] ?? '');
+  $estatus = trim($_POST['estatus'] ?? 'disponible');
+  $ubicacion = trim($_POST['ubicacion'] ?? '');
+  $foto = trim($_POST['foto'] ?? '') ?: null;
+  if ($equipo==='') {
+    flash("<div class='alert alert-danger'>El nombre es obligatorio.</div>");
+    redirect('equipos.editar&id_equipo='.$id);
+  }
+  q("UPDATE equipos SET equipo=?, estatus=?, ubicacion=?, foto=?, updated_at=CURRENT_TIMESTAMP() WHERE id_equipo=?",
+    [$equipo,$estatus,$ubicacion,$foto,$id]);
+  equipos_log('actualizar',['id_equipo'=>$id]);
+  flash("<div class='alert alert-success'>Equipo actualizado.</div>");
   redirect('equipos.listar');
-break;
+  break;
 
-/* =========================================================
- * ASIGNAR A SERVICIO (GET form)
- * =======================================================*/
+case 'baja':
+  $id = trim($_GET['id_equipo'] ?? '');
+  if ($id==='') redirect('equipos.listar');
+  q("UPDATE equipos SET eliminado=1, updated_at=CURRENT_TIMESTAMP() WHERE id_equipo=?", [$id]);
+  equipos_log('baja',['id_equipo'=>$id]);
+  flash("<div class='alert alert-success'>Equipo dado de baja.</div>");
+  redirect('equipos.listar');
+  break;
+
 case 'asignar':
   $id = trim($_GET['id_equipo'] ?? '');
-  $r  = qone("SELECT id_equipo, equipo, estatus FROM equipos WHERE id_equipo=? AND eliminado=0", [$id]);
-  if (!$r) {
-    $_SESSION['_alerts'] = "<div class='alert alert-warning'>Equipo no encontrado.</div>";
+  $eq = equipos_find($id);
+  if (!$eq) {
+    flash("<div class='alert alert-warning'>Equipo no encontrado.</div>");
     redirect('equipos.listar');
   }
   ob_start(); ?>
   <div class="card shadow-sm">
     <div class="card-body">
-      <h1 class="h5 mb-3">Asignar equipo <code><?= e($r['id_equipo']) ?></code> a servicio</h1>
-      <?php if ($r['estatus']==='asignado'): ?>
-        <div class="alert alert-warning">Este equipo ya está marcado como asignado.</div>
-      <?php endif; ?>
-      <form method="post" action="?r=equipos.guardar_asignacion&id_equipo=<?= urlencode($r['id_equipo']) ?>">
-        <?= form_input('id_servicio','Servicio #','', ['type'=>'number','min'=>'1','required'=>true]) ?>
-        <?= form_input('fecha','Fecha', date('Y-m-d'), ['type'=>'date','required'=>true]) ?>
-        <button class="btn btn-primary">Guardar asignación</button>
-        <a class="btn btn-light" href="?r=equipos.listar">Cancelar</a>
+      <h1 class="h5 mb-3">Asignar equipo <?= e($eq['equipo']) ?> (<?= e($eq['id_equipo']) ?>)</h1>
+      <form method="post" action="?r=equipos.guardar_asignacion&id_equipo=<?= urlencode($eq['id_equipo']) ?>">
+        <?= csrf_field() ?>
+        <div class="alert alert-light">Estatus actual: <strong><?= e($eq['estatus']) ?></strong></div>
+        <?= form_input('id_servicio','Servicio destino','',['type'=>'number','min'=>1,'required'=>true]) ?>
+        <?= form_input('origen','Origen','almacén',['required'=>true]) ?>
+        <?= form_input('destino','Destino','servicio',['required'=>true]) ?>
+        <?= form_input('notas','Notas','') ?>
+        <div class="d-flex gap-2 mt-3">
+          <button class="btn btn-primary">Asignar</button>
+          <a class="btn btn-light" href="?r=equipos.listar">Cancelar</a>
+        </div>
       </form>
     </div>
   </div>
   <?php
   render('Asignar equipo', ob_get_clean());
-break;
+  break;
 
-/* =========================================================
- * GUARDAR ASIGNACIÓN (POST)
- * =======================================================*/
 case 'guardar_asignacion':
-  $id_eq = trim($_GET['id_equipo'] ?? '');
-  $id_serv = (int)($_POST['id_servicio'] ?? 0);
-  $fecha   = trim($_POST['fecha'] ?? date('Y-m-d'));
-
-  if ($id_eq==='' || $id_serv<=0) {
-    $_SESSION['_alerts'] = "<div class='alert alert-danger'>Datos incompletos.</div>";
+  $id = trim($_GET['id_equipo'] ?? '');
+  $eq = equipos_find($id);
+  if (!$eq) {
+    flash("<div class='alert alert-warning'>Equipo no encontrado.</div>");
     redirect('equipos.listar');
   }
-  if (!__servicio_exists($id_serv)) {
-    $_SESSION['_alerts'] = "<div class='alert alert-warning'>Servicio no existe.</div>";
-    redirect('equipos.asignar&id_equipo='.$id_eq);
+  try { csrf_verify(); } catch (RuntimeException $e) { flash("<div class='alert alert-danger'>Sesión inválida.</div>"); redirect('equipos.asignar&id_equipo='.$id); }
+  $id_servicio = (int)($_POST['id_servicio'] ?? 0);
+  $origen = trim($_POST['origen'] ?? 'almacén');
+  $destino = trim($_POST['destino'] ?? 'servicio');
+  $notas = trim($_POST['notas'] ?? '');
+  if (!servicio_exists($id_servicio)) {
+    flash("<div class='alert alert-danger'>Servicio no encontrado.</div>");
+    redirect('equipos.asignar&id_equipo='.$id);
   }
-
+  if ($eq['estatus'] === 'asignado') {
+    flash("<div class='alert alert-warning'>El equipo ya está asignado.</div>");
+    redirect('equipos.asignar&id_equipo='.$id);
+  }
   $pdo = db();
   try {
     $pdo->beginTransaction();
-
-    // registra vínculo equipo-servicio
-    q("INSERT INTO servicio_equipo (id_servicio, id_equipo, fecha) VALUES (?, ?, ?)", [$id_serv, $id_eq, $fecha]);
-
-    // marca equipo como asignado
-    q("UPDATE equipos SET estatus='asignado', updated_at=CURRENT_DATE() WHERE id_equipo=? AND eliminado=0", [$id_eq]);
-
+    q("UPDATE equipos SET estatus='asignado', ubicacion=?, updated_at=CURRENT_TIMESTAMP() WHERE id_equipo=?", [$destino,$id]);
+    equipos_registrar_mov($pdo,$id,'asignacion',$id_servicio,$origen,$destino,$notas ?: null);
+    equipos_log('asignar',['id_equipo'=>$id,'servicio'=>$id_servicio]);
     $pdo->commit();
-    $_SESSION['_alerts'] = "<div class='alert alert-success'>Equipo asignado al servicio #$id_serv.</div>";
-    redirect('equipos.listar');
+    flash("<div class='alert alert-success'>Equipo asignado.</div>");
   } catch (Exception $e) {
     if ($pdo->inTransaction()) $pdo->rollBack();
-    $_SESSION['_alerts'] = "<div class='alert alert-danger'>No se pudo asignar el equipo.</div>";
-    redirect('equipos.asignar&id_equipo='.$id_eq);
+    flash("<div class='alert alert-danger'>No se pudo asignar el equipo.</div>");
   }
-break;
+  redirect('equipos.listar');
+  break;
 
-/* =========================================================
- * RETORNAR (GET form) — marcar regreso al inventario
- * =======================================================*/
 case 'retornar':
   $id = trim($_GET['id_equipo'] ?? '');
-  $r  = qone("SELECT id_equipo, equipo, estatus FROM equipos WHERE id_equipo=? AND eliminado=0", [$id]);
-  if (!$r) { $_SESSION['_alerts'] = "<div class='alert alert-warning'>Equipo no encontrado.</div>"; redirect('equipos.listar'); }
-
-  $personas = __equipos_personal();
-
+  $eq = equipos_find($id);
+  if (!$eq) {
+    flash("<div class='alert alert-warning'>Equipo no encontrado.</div>");
+    redirect('equipos.listar');
+  }
   ob_start(); ?>
   <div class="card shadow-sm">
     <div class="card-body">
-      <h1 class="h5 mb-3">Retornar equipo <code><?= e($r['id_equipo']) ?></code> al inventario</h1>
-      <form method="post" action="?r=equipos.guardar_retorno&id_equipo=<?= urlencode($r['id_equipo']) ?>">
-        <div class="row g-2">
-          <div class="col-md-4">
-            <label class="form-label">Responsable</label>
-            <input class="form-control" name="responsable" placeholder="Nombre responsable" required>
-          </div>
-          <div class="col-md-4">
-            <label class="form-label">Auxiliar</label>
-            <select name="auxiliar" class="form-select" required>
-              <option value="">— Selecciona auxiliar —</option>
-              <?php foreach($personas as $p): ?>
-                <option value="<?= e($p['nombre']) ?>"><?= e($p['nombre']) ?></option>
-              <?php endforeach; ?>
-            </select>
-          </div>
-          <div class="col-md-4">
-            <?= form_input('fecha','Fecha', date('Y-m-d'), ['type'=>'date','required'=>true]) ?>
-          </div>
+      <h1 class="h5 mb-3">Retornar equipo <?= e($eq['equipo']) ?> (<?= e($eq['id_equipo']) ?>)</h1>
+      <form method="post" action="?r=equipos.guardar_retorno&id_equipo=<?= urlencode($eq['id_equipo']) ?>">
+        <?= csrf_field() ?>
+        <?= form_input('id_servicio','Servicio origen','',['type'=>'number','min'=>1,'required'=>true]) ?>
+        <?= form_input('destino','Destino','almacén',['required'=>true]) ?>
+        <?= form_input('notas','Notas','') ?>
+        <div class="d-flex gap-2 mt-3">
+          <button class="btn btn-primary">Registrar retorno</button>
+          <a class="btn btn-light" href="?r=equipos.listar">Cancelar</a>
         </div>
-        <?= form_input('notas','Notas (opcional)') ?>
-        <div class="d-grid mt-2">
-          <button class="btn btn-success">Guardar retorno</button>
-        </div>
-        <a class="btn btn-light mt-2" href="?r=equipos.listar">Cancelar</a>
       </form>
     </div>
   </div>
   <?php
-  render('Retornar equipo', ob_get_clean());
-break;
+  render('Retorno de equipo', ob_get_clean());
+  break;
 
-/* =========================================================
- * GUARDAR RETORNO (POST)
- * Crea registro en 'entrada' y enlaza en 'equipo_entrada' y 'servicio_equipo_entrada'
- * =======================================================*/
 case 'guardar_retorno':
-  $id_eq = trim($_GET['id_equipo'] ?? '');
-  $resp  = trim($_POST['responsable'] ?? '');
-  $aux   = trim($_POST['auxiliar'] ?? '');
-  $fecha = trim($_POST['fecha'] ?? date('Y-m-d'));
-  $notas = trim($_POST['notas'] ?? '');
-
-  if ($id_eq==='' || $resp==='' || $aux==='') {
-    $_SESSION['_alerts'] = "<div class='alert alert-danger'>Responsable y Auxiliar son obligatorios.</div>";
-    redirect('equipos.retornar&id_equipo='.$id_eq);
+  $id = trim($_GET['id_equipo'] ?? '');
+  $eq = equipos_find($id);
+  if (!$eq) {
+    flash("<div class='alert alert-warning'>Equipo no encontrado.</div>");
+    redirect('equipos.listar');
   }
-
+  try { csrf_verify(); } catch (RuntimeException $e) { flash("<div class='alert alert-danger'>Sesión inválida.</div>"); redirect('equipos.retornar&id_equipo='.$id); }
+  $id_servicio = (int)($_POST['id_servicio'] ?? 0);
+  $destino = trim($_POST['destino'] ?? 'almacén');
+  $notas = trim($_POST['notas'] ?? '');
+  if (!servicio_exists($id_servicio)) {
+    flash("<div class='alert alert-danger'>Servicio no encontrado.</div>");
+    redirect('equipos.retornar&id_equipo='.$id);
+  }
   $pdo = db();
   try {
     $pdo->beginTransaction();
-
-    // 1) Crear una 'entrada' general
-    q("INSERT INTO entrada (responsable, auxiliar, notas, created_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP())",
-      [$resp, $aux, ($notas?:'Retorno de equipo '.$id_eq)]);
-    $id_ent = $pdo->lastInsertId();
-
-    // 2) Enlazar el equipo a la entrada (bitácora)
-    q("INSERT INTO equipo_entrada (id_equipo, id_entrada, fecha) VALUES (?, ?, ?)", [$id_eq, $id_ent, $fecha]);
-
-    // 3) Registrar retorno en servicio_equipo_entrada (traza por auxiliar)
-    q("INSERT INTO servicio_equipo_entrada (id_equipo, auxiliar, created_at) VALUES (?, ?, CURRENT_TIMESTAMP())", [$id_eq, $aux]);
-
-    // 4) Marcar equipo disponible de nuevo
-    q("UPDATE equipos SET estatus='disponible', updated_at=CURRENT_DATE() WHERE id_equipo=? AND eliminado=0", [$id_eq]);
-
+    q("UPDATE equipos SET estatus='disponible', ubicacion=?, updated_at=CURRENT_TIMESTAMP() WHERE id_equipo=?", [$destino,$id]);
+    equipos_registrar_mov($pdo,$id,'devolucion',$id_servicio,null,$destino,$notas ?: null);
+    equipos_log('retorno',['id_equipo'=>$id,'servicio'=>$id_servicio]);
     $pdo->commit();
-    $_SESSION['_alerts'] = "<div class='alert alert-success'>Retorno registrado. Equipo disponible.</div>";
-    redirect('equipos.listar');
+    flash("<div class='alert alert-success'>Equipo retornado.</div>");
   } catch (Exception $e) {
     if ($pdo->inTransaction()) $pdo->rollBack();
-    $_SESSION['_alerts'] = "<div class='alert alert-danger'>No se pudo registrar el retorno.</div>";
-    redirect('equipos.retornar&id_equipo='.$id_eq);
+    flash("<div class='alert alert-danger'>No se pudo registrar el retorno.</div>");
   }
-break;
+  redirect('equipos.listar');
+  break;
 
-/* =========================================================
- * BAJA LÓGICA
- * =======================================================*/
-case 'baja':
+case 'historial':
   $id = trim($_GET['id_equipo'] ?? '');
-  if ($id!=='') {
-    q("UPDATE equipos SET eliminado=1, updated_at=CURRENT_DATE() WHERE id_equipo=?", [$id]);
-    $_SESSION['_alerts'] = "<div class='alert alert-success'>Equipo dado de baja.</div>";
+  $eq = equipos_find($id);
+  if (!$eq) {
+    flash("<div class='alert alert-warning'>Equipo no encontrado.</div>");
+    redirect('equipos.listar');
   }
-  $qParam  = isset($_GET['q'])  ? '&q='.urlencode($_GET['q'])   : '';
-  $eParam  = isset($_GET['est'])? '&est='.urlencode($_GET['est']): '';
-  redirect('equipos.listar'.$qParam.$eParam);
-break;
+  $movs = equipos_movimientos($id);
+  ob_start(); ?>
+  <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-2 mb-3">
+    <h1 class="h5 m-0">Kardex · <?= e($eq['equipo']) ?> (<?= e($eq['id_equipo']) ?>)</h1>
+    <a href="?r=equipos.listar" class="btn btn-light btn-sm">Volver</a>
+  </div>
+  <div class="table-responsive">
+    <table class="table table-striped table-hover table-sm">
+      <thead><tr><th>Fecha</th><th>Movimiento</th><th>Servicio</th><th>Origen</th><th>Destino</th><th>Notas</th></tr></thead>
+      <tbody>
+        <?php foreach ($movs as $m): ?>
+        <tr>
+          <td><?= e(date('Y-m-d H:i', strtotime($m['created_at']))) ?></td>
+          <td><?= e($m['tipo']) ?></td>
+          <td><?= $m['id_servicio'] ? '<a href="?r=servicios.ver&id='.$m['id_servicio'].'">#'.$m['id_servicio'].'</a>' : '—' ?></td>
+          <td><?= e($m['origen'] ?? '—') ?></td>
+          <td><?= e($m['destino'] ?? '—') ?></td>
+          <td><?= e($m['notas'] ?? '—') ?></td>
+        </tr>
+        <?php endforeach; ?>
+        <?php if (empty($movs)): ?>
+        <tr><td colspan="6" class="text-center text-muted">Sin movimientos</td></tr>
+        <?php endif; ?>
+      </tbody>
+    </table>
+  </div>
+  <?php
+  render('Kardex de equipo', ob_get_clean());
+  break;
 
-/* =========================================================
- * DEFAULT
- * =======================================================*/
 default:
   redirect('equipos.listar');
 }

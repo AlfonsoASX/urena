@@ -13,7 +13,7 @@ switch ($action ?? 'login') {
    * =========================*/
   case 'logout':
     logout();
-    $_SESSION['_alerts'] = "<div class='alert alert-info'>Sesión cerrada.</div>";
+    flash("<div class='alert alert-info'>Sesión cerrada.</div>");
     redirect('auth.login');
   break;
 
@@ -29,6 +29,9 @@ switch ($action ?? 'login') {
 
     $msg = '';
     if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+      try { csrf_verify(); } catch (RuntimeException $e) {
+        $msg = "<div class='alert alert-danger'>Sesión inválida, vuelve a intentar.</div>";
+      }
       $usuario = trim($_POST['usuario'] ?? '');
       $pass    = (string)($_POST['pass'] ?? '');
 
@@ -37,7 +40,7 @@ switch ($action ?? 'login') {
       } else {
         // usa login() definido en core/auth.php (password_verify)
         if (login($usuario, $pass)) {
-          $_SESSION['_alerts'] = "<div class='alert alert-success'>¡Bienvenido!</div>";
+          flash("<div class='alert alert-success'>¡Bienvenido!</div>");
           redirect('home.index');
         } else {
           $msg = "<div class='alert alert-danger'>Usuario o contraseña incorrectos.</div>";
@@ -54,6 +57,7 @@ switch ($action ?? 'login') {
             <h1 class="h4 mb-3 text-center">Acceso</h1>
             <?= $msg ?>
             <form method="post" action="?r=auth.login" autocomplete="off">
+              <?= csrf_field() ?>
               <?= form_input('usuario', 'Usuario', $_POST['usuario'] ?? '', ['required'=>true]) ?>
               <?= form_input('pass', 'Contraseña', '', ['type'=>'password','required'=>true]) ?>
               <button class="btn btn-primary w-100 mt-2">Entrar</button>
