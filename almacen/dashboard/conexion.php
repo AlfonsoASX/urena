@@ -1,8 +1,8 @@
 <?php 
 
-$servidor="mysql:dbname=almacen;host=127.0.0.1";
-$usuario="root";
-$password="Siempre_estamos_unidos_";
+$servidor="mysql:dbname=ganas001_urena;host=ganas001.mysql.guardedhost.com";
+$usuario="ganas001_urena";
+$password="t*H3q2pb6Kk)";
 
 try{
     $pdo = new PDO($servidor,$usuario,$password);
@@ -12,4 +12,3 @@ try{
     exit;
 }
 return $pdo;
-?>

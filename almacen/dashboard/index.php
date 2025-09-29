@@ -1,4 +1,32 @@
-<!DOCTYPE html>
+<?php 
+if (!empty($_POST)){
+	session_start();
+
+	require 'conexion.php';
+	
+	$usuario = strtolower( $_POST['usuario']);
+	$pass = $_POST['pass'];
+	$pdo -> setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+	$query = $pdo -> prepare("SELECT * FROM usuarios WHERE usuario = :usuario AND pass = :pass");
+	$query -> bindParam(":usuario",$usuario);
+	$query -> bindParam(":pass",$pass);
+	$query -> execute();
+	$sesion = $query -> fetch(PDO:: FETCH_ASSOC);
+	if ($sesion) {
+		$_SESSION['usuario'] = $sesion["usuario"];
+		$_SESSION['nombre'] = $sesion['nombre'];
+		$_SESSION['perfil'] = $sesion['perfil'];
+		$_SESSION['tiempo'] = time();
+		
+		header("location:principal.php");
+		
+	} else {
+		echo "Credenciales incorrectas";
+	}
+
+}	
+
+?><!DOCTYPE html>
 <html >
   <head>
     <meta charset="UTF-8">
@@ -61,35 +89,7 @@
 	
 </body>
 
-<?php 
 
-if ($_POST){
-	session_start();
-	require 'conexion.php';
-	
-	$usuario = strtolower( $_POST['usuario']);
-	$pass = $_POST['pass'];
-	$pdo -> setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-	$query = $pdo -> prepare("SELECT * FROM usuarios WHERE usuario = :usuario AND pass = :pass");
-	$query -> bindParam(":usuario",$usuario);
-	$query -> bindParam(":pass",$pass);
-	$query -> execute();
-	$sesion = $query -> fetch(PDO:: FETCH_ASSOC);
-	if ($sesion) {
-		$_SESSION['usuario'] = $sesion["usuario"];
-		$_SESSION['nombre'] = $sesion['nombre'];
-		$_SESSION['perfil'] = $sesion['perfil'];
-		$_SESSION['tiempo'] = time();
-		
-		header("location:principal.php");
-		
-	} else {
-		echo "Credenciales incorrectas";
-	}
-
-}	
-
-?>
 
 </html>
 
