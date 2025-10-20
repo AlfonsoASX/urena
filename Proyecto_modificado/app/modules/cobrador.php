@@ -18,12 +18,9 @@ $action = $action ?? 'panel';
 // -------------------------------------------------------------
 
 function cobrador_personal_id(): int {
-
   $u = current_user();
   $r = qone("SELECT id_personal FROM futuro_personal WHERE id=?", [$u['id']]);
   return (int)($r['id_personal'] ?? 0);
-
-  //return $_SESSION['user']['id'];
 }
 
 function cobrador_contratos(int $id_personal, bool $soloAsignados = true): array {
@@ -57,38 +54,55 @@ function cobrador_contratos(int $id_personal, bool $soloAsignados = true): array
     : qall($baseSQL);
 }
 
+// -------------------------------------------------------------
+// NUEVAS FUNCIONES: Registrar gestión y tickets
+// -------------------------------------------------------------
 
-function cobrador_registrar_pago(int $id_contrato, float $monto, int $id_personal): ?int {
+function cobrador_registrar_gestion(int $id_contrato, ?float $monto, int $id_personal, float $lat, float $lng, ?string $fecha_proxima, ?string $notas): ?int {
   $pdo = db();
-
   try {
     $pdo->beginTransaction();
-    q("INSERT INTO futuro_abonos (id_contrato, saldo, cant_abono, fecha_registro)
-       VALUES (?,?,?,CURRENT_TIMESTAMP())", [$id_contrato,0,$monto]);
 
-    $id_abono = $pdo->lastInsertId();
+    $id_abono = null;
+    if ($monto && $monto > 0) {
+      q("INSERT INTO futuro_abonos (id_contrato, saldo, cant_abono, fecha_registro)
+         VALUES (?,?,?,CURRENT_TIMESTAMP())", [$id_contrato, 0, $monto]);
+      $id_abono = $pdo->lastInsertId();
+      q("INSERT INTO futuro_abono_cobrador (id_abono, id_personal, fecha_registro)
+         VALUES (?,?,CURRENT_TIMESTAMP())", [$id_abono, $id_personal]);
+    }
 
-//    error_log('--'.$id_abono.'--');
+    q("INSERT INTO futuro_gestion (id_contrato, id_personal, cant_abono, latitud, longitud, fecha_proxima_visita, notas)
+       VALUES (?,?,?,?,?,?,?)", [$id_contrato, $id_personal, $monto, $lat, $lng, $fecha_proxima, $notas]);
+    $id_gestion = $pdo->lastInsertId();
 
-
-    q("INSERT INTO futuro_abono_cobrador (id_abono, id_personal, fecha_registro)
-       VALUES (?,?,CURRENT_TIMESTAMP())", [$id_abono,$id_personal]);
     $pdo->commit();
-    return $id_abono;
+    return $id_abono ?: $id_gestion;
+
   } catch (Exception $e) {
     if ($pdo->inTransaction()) $pdo->rollBack();
-    error_log("[cobrador_registrar_pago] ".$e->getMessage());
+    error_log("[cobrador_registrar_gestion] ".$e->getMessage());
     return null;
   }
 }
 
-function cobrador_ticket_data(int $id_abono): ?array {
-  return qone("
-    SELECT a.id_abono, a.id_contrato, a.cant_abono, a.fecha_registro, t.titular
-    FROM futuro_abonos a
-    LEFT JOIN vw_titular_contrato t ON t.id_contrato = a.id_contrato
-    WHERE a.id_abono = ?
-  ", [$id_abono]);
+function cobrador_ticket_visita(string $titular, int $id_contrato, ?string $fecha_proxima): void {
+  ?>
+  <div class="text-center">
+    <h3>VISITA REGISTRADA</h3>
+    <hr>
+    <p><strong>Contrato:</strong> <?= e($id_contrato) ?></p>
+    <p><strong>Titular:</strong> <?= e($titular) ?></p>
+    <p><strong>Fecha:</strong> <?= date('Y-m-d H:i') ?></p>
+    <?php if ($fecha_proxima): ?>
+      <p><strong>Próxima visita:</strong> <?= e($fecha_proxima) ?></p>
+    <?php endif; ?>
+    <hr>
+    <p>El cobrador realizó una visita a su domicilio.</p>
+    <p>Si no fue atendido, programaremos una nueva visita.</p>
+  </div>
+  <script>window.print();</script>
+  <?php
 }
 
 // -------------------------------------------------------------
@@ -96,6 +110,7 @@ function cobrador_ticket_data(int $id_abono): ?array {
 // -------------------------------------------------------------
 
 switch ($action) {
+
 case 'panel':
   ob_start(); ?>
   <div class="card shadow-sm">
@@ -112,8 +127,7 @@ case 'panel':
       </div>
     </div>
   </div>
-  <?php
-  render('Panel del cobrador', ob_get_clean());
+  <?php render('Panel del cobrador', ob_get_clean());
   break;
 
 case 'contratos':
@@ -139,7 +153,7 @@ case 'contratos':
           <th>Dirección</th>
           <th>Monto</th>
           <th>Estatus</th>
-          <th style="width:220px">Acciones</th>
+          <th style="width:260px">Acciones</th>
         </tr>
       </thead>
       <tbody>
@@ -155,102 +169,89 @@ case 'contratos':
           <td>
             <?= e($direccion ?: '—') ?>
             <?php if ($link_maps): ?>
-              <a href="<?= $link_maps ?>" target="_blank" 
-                 class="btn btn-outline-info btn-sm ms-1" title="Abrir en Google Maps">
-                📍
-              </a>
+              <a href="<?= $link_maps ?>" target="_blank" class="btn btn-outline-info btn-sm ms-1" title="Abrir en Google Maps">📍</a>
             <?php endif; ?>
           </td>
           <td>$<?= number_format($r['costo_final'], 2) ?></td>
+          <td><span class="badge bg-<?= $r['estatus'] === 'activo' ? 'success' : 'secondary' ?>"><?= e($r['estatus']) ?></span></td>
           <td>
-            <span class="badge bg-<?= $r['estatus'] === 'activo' ? 'success' : 'secondary' ?>">
-              <?= e($r['estatus']) ?>
-            </span>
-          </td>
-          <td>
-            <a href="?r=cobrador.pago&id_contrato=<?= urlencode($r['id_contrato']) ?>" 
-               class="btn btn-sm btn-outline-success">
-              💰 Registrar pago
-            </a>
-            <?php if ($link_maps): ?>
-              <a href="<?= $link_maps ?>" target="_blank" class="btn btn-sm btn-outline-primary">
-                🗺️ Ruta
-              </a>
-            <?php endif; ?>
+            <a href="?r=cobrador.gestion&id_contrato=<?= urlencode($r['id_contrato']) ?>" class="btn btn-sm btn-outline-success">📝 Registrar gestión</a>
+            <?php if ($link_maps): ?><a href="<?= $link_maps ?>" target="_blank" class="btn btn-sm btn-outline-primary">🗺️ Ruta</a><?php endif; ?>
           </td>
         </tr>
       <?php endforeach; ?>
-      <?php if (empty($rows)): ?>
-        <tr><td colspan="6" class="text-center text-muted">Sin registros</td></tr>
-      <?php endif; ?>
+      <?php if (empty($rows)): ?><tr><td colspan="6" class="text-center text-muted">Sin registros</td></tr><?php endif; ?>
       </tbody>
     </table>
   </div>
-  <?php
-  render('Contratos del cobrador', ob_get_clean());
+  <?php render('Contratos del cobrador', ob_get_clean());
   break;
 
-case 'pago':
+// -------------------------------------------------------------
+// NUEVA ACCIÓN: Registrar gestión (con o sin pago)
+// -------------------------------------------------------------
+case 'gestion':
   $id_contrato = (int)($_GET['id_contrato'] ?? 0);
-  if ($id_contrato <= 0) {
-    flash("<div class='alert alert-warning'>Contrato inválido.</div>");
-    redirect('cobrador.contratos');
-  }
+  if ($id_contrato <= 0) { flash("<div class='alert alert-warning'>Contrato inválido.</div>"); redirect('cobrador.contratos'); }
 
   if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    try { csrf_verify(); } catch (RuntimeException $e) {
-      flash("<div class='alert alert-danger'>Sesión inválida.</div>");
-      redirect('cobrador.pago&id_contrato='.$id_contrato);
-    }
-    $monto = (float)($_POST['monto'] ?? 0);
+    try { csrf_verify(); } catch (RuntimeException $e) { flash("<div class='alert alert-danger'>Sesión inválida.</div>"); redirect('cobrador.gestion&id_contrato='.$id_contrato); }
+
+    $monto = trim($_POST['monto']) !== '' ? (float)$_POST['monto'] : null;
+    $lat = (float)($_POST['latitud'] ?? 0);
+    $lng = (float)($_POST['longitud'] ?? 0);
+    $fecha_proxima = $_POST['fecha_proxima_visita'] ?: null;
+    $notas = $_POST['notas'] ?? '';
     $id_personal = cobrador_personal_id();
-    if ($monto <= 0) {
-      flash("<div class='alert alert-danger'>El monto debe ser mayor que 0.</div>");
-      redirect('cobrador.pago&id_contrato='.$id_contrato);
-    }
-    
-    //echo "hola $id_contrato, $monto, $id_personal";
-    $id_abono = cobrador_registrar_pago($id_contrato, $monto, $id_personal);
 
-    flash( "hola $id_contrato, $monto, $id_personal");
+    $id_resultado = cobrador_registrar_gestion($id_contrato, $monto, $id_personal, $lat, $lng, $fecha_proxima, $notas);
 
-
-
-    if ($id_abono) {
-      flash("<div class='alert alert-success'>Pago registrado correctamente.</div>");
-      redirect('cobrador.ticket&id_abono='.$id_abono);
-    } else {
-
-      flash("<div class='alert alert-danger'>No se pudo registrar el pago.</div>");
-      redirect('cobrador.pago&id_contrato='.$id_contrato);
+    if ($monto && $id_resultado) redirect('cobrador.ticket&id_abono='.$id_resultado);
+    else {
+      $t = qone("SELECT titular FROM vw_titular_contrato WHERE id_contrato=?", [$id_contrato]);
+      render('Ticket de visita', (function() use($t,$id_contrato,$fecha_proxima){ob_start();cobrador_ticket_visita($t['titular'],$id_contrato,$fecha_proxima);return ob_get_clean();})());
+      exit;
     }
   }
 
   ob_start(); ?>
   <div class="card shadow-sm">
     <div class="card-body">
-      <h1 class="h5 mb-3">Registrar pago · Contrato #<?= e($id_contrato) ?></h1>
-      <form method="post" action="?r=cobrador.pago&id_contrato=<?= urlencode($id_contrato) ?>">
+      <h1 class="h5 mb-3">Registrar gestión · Contrato #<?= e($id_contrato) ?></h1>
+      <form method="post" action="?r=cobrador.gestion&id_contrato=<?= urlencode($id_contrato) ?>" id="formGestion">
         <?= csrf_field() ?>
-        <?= form_input('monto','Monto a pagar','',['type'=>'number','step'=>'0.01','min'=>'0.01','required'=>true]) ?>
+        <?= form_input('monto','Monto abonado (dejar vacío si no hubo pago)','',['type'=>'number','step'=>'0.01']) ?>
+        <?= form_input('fecha_proxima_visita','Fecha próxima visita','',['type'=>'date']) ?>
+        <?= form_input('notas','Notas adicionales','',['type'=>'text','maxlength'=>'255']) ?>
+        <input type="hidden" name="latitud" id="latitud">
+        <input type="hidden" name="longitud" id="longitud">
+        <script>
+        if (navigator.geolocation) {
+          navigator.geolocation.getCurrentPosition(pos => {
+            document.getElementById('latitud').value = pos.coords.latitude.toFixed(6);
+            document.getElementById('longitud').value = pos.coords.longitude.toFixed(6);
+          }, err => alert("No se pudo obtener ubicación"));
+        } else {
+          alert("Geolocalización no disponible");
+        }
+        </script>
         <div class="d-flex gap-2 mt-3">
-          <button class="btn btn-primary">Guardar pago</button>
+          <button class="btn btn-primary">Guardar gestión</button>
           <a class="btn btn-light" href="?r=cobrador.contratos">Cancelar</a>
         </div>
       </form>
     </div>
   </div>
-  <?php
-  render('Registrar pago', ob_get_clean());
+  <?php render('Registrar gestión', ob_get_clean());
   break;
 
+// -------------------------------------------------------------
 case 'ticket':
   $id_abono = (int)($_GET['id_abono'] ?? 0);
-  $data = cobrador_ticket_data($id_abono);
-  if (!$data) {
-    flash("<div class='alert alert-warning'>Ticket no encontrado.</div>");
-    redirect('cobrador.contratos');
-  }
+  $data = qone("SELECT a.id_abono, a.id_contrato, a.cant_abono, a.fecha_registro, t.titular 
+                FROM futuro_abonos a LEFT JOIN vw_titular_contrato t ON t.id_contrato = a.id_contrato 
+                WHERE a.id_abono=?", [$id_abono]);
+  if (!$data) { flash("<div class='alert alert-warning'>Ticket no encontrado.</div>"); redirect('cobrador.contratos'); }
   ob_start(); ?>
   <div class="text-center">
     <h3>RECIBO DE PAGO</h3>
@@ -264,8 +265,7 @@ case 'ticket':
     <p>Gracias por su pago</p>
   </div>
   <script>window.print();</script>
-  <?php
-  render('Ticket de pago', ob_get_clean());
+  <?php render('Ticket de pago', ob_get_clean());
   break;
 
 default:
