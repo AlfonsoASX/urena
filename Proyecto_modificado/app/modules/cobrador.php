@@ -7,7 +7,6 @@ require_once __DIR__.'/../core/auth.php';
 
 require_login();
 
-// Solo ciertos roles pueden acceder
 $roles = ['cobrador','administradora'];
 require_role($roles);
 
@@ -35,7 +34,14 @@ function cobrador_contratos(int $id_personal, bool $soloAsignados = true): array
         IFNULL(d.municipio, '')
       )) AS direccion,
       c.costo_final,
-      c.estatus
+      c.estatus,
+      (
+        SELECT g.fecha_proxima_visita 
+        FROM futuro_gestion g 
+        WHERE g.id_contrato = c.id_contrato 
+        ORDER BY g.fecha_registro DESC 
+        LIMIT 1
+      ) AS fecha_proxima_visita
     FROM futuro_contratos c
     " . ($soloAsignados ? "
       INNER JOIN futuro_contrato_cobrador fc ON fc.id_contrato = c.id_contrato
@@ -46,17 +52,13 @@ function cobrador_contratos(int $id_personal, bool $soloAsignados = true): array
     LEFT JOIN domicilios d ON d.id_domicilio = td.id_domicilio
     " . ($soloAsignados ? "WHERE fc.id_personal = ?" : "") . "
     GROUP BY c.id_contrato
-    ORDER BY c.id_contrato DESC
+    ORDER BY fecha_proxima_visita IS NULL ASC, fecha_proxima_visita ASC
   ";
 
   return $soloAsignados
     ? qall($baseSQL, [$id_personal])
     : qall($baseSQL);
 }
-
-// -------------------------------------------------------------
-// NUEVAS FUNCIONES: Registrar gestión y tickets
-// -------------------------------------------------------------
 
 function cobrador_registrar_gestion(int $id_contrato, ?float $monto, int $id_personal, float $lat, float $lng, ?string $fecha_proxima, ?string $notas): ?int {
   $pdo = db();
@@ -86,8 +88,7 @@ function cobrador_registrar_gestion(int $id_contrato, ?float $monto, int $id_per
   }
 }
 
-function cobrador_ticket_visita(string $titular, int $id_contrato, ?string $fecha_proxima): void {
-  ?>
+function cobrador_ticket_visita(string $titular, int $id_contrato, ?string $fecha_proxima): void { ?>
   <div class="text-center">
     <h3>VISITA REGISTRADA</h3>
     <hr>
@@ -102,11 +103,10 @@ function cobrador_ticket_visita(string $titular, int $id_contrato, ?string $fech
     <p>Si no fue atendido, programaremos una nueva visita.</p>
   </div>
   <script>window.print();</script>
-  <?php
-}
+<?php }
 
 // -------------------------------------------------------------
-// Controlador principal por acción
+// Controlador principal
 // -------------------------------------------------------------
 
 switch ($action) {
@@ -118,12 +118,8 @@ case 'panel':
       <h1 class="h4 mb-3">Panel del Cobrador</h1>
       <p>Bienvenido, <strong><?= e(current_user()['nombre']) ?></strong></p>
       <div class="list-group">
-        <a href="?r=cobrador.contratos" class="list-group-item list-group-item-action">
-          📄 Ver contratos asignados
-        </a>
-        <a href="?r=cobrador.contratos&filtro=todos" class="list-group-item list-group-item-action">
-          📋 Ver todos los contratos
-        </a>
+        <a href="?r=cobrador.contratos" class="list-group-item list-group-item-action">📄 Ver contratos asignados</a>
+        <a href="?r=cobrador.contratos&filtro=todos" class="list-group-item list-group-item-action">📋 Ver todos los contratos</a>
       </div>
     </div>
   </div>
@@ -153,15 +149,25 @@ case 'contratos':
           <th>Dirección</th>
           <th>Monto</th>
           <th>Estatus</th>
+          <th>📅 Próxima visita</th>
           <th style="width:260px">Acciones</th>
         </tr>
       </thead>
       <tbody>
       <?php foreach ($rows as $r): 
         $direccion = trim($r['direccion'] ?? '');
-        $link_maps = $direccion !== '' 
-          ? 'https://www.google.com/maps/search/?api=1&query=' . urlencode($direccion . ', León, Guanajuato') 
-          : null;
+        $link_maps = $direccion ? 'https://www.google.com/maps/search/?api=1&query=' . urlencode($direccion . ', León, Guanajuato') : null;
+
+        // Manejo de color para próxima visita
+        $fecha = $r['fecha_proxima_visita'];
+        $clase = 'text-muted';
+        $texto = 'Sin programar';
+        if ($fecha) {
+          $hoy = date('Y-m-d');
+          if ($fecha > $hoy) { $clase = 'text-success fw-semibold'; $texto = '🟢 ' . date('d/m/Y', strtotime($fecha)); }
+          elseif ($fecha == $hoy) { $clase = 'text-primary fw-semibold'; $texto = '🔵 Hoy'; }
+          else { $clase = 'text-danger fw-semibold'; $texto = '🔴 ' . date('d/m/Y', strtotime($fecha)); }
+        }
       ?>
         <tr>
           <td><code><?= e($r['id_contrato']) ?></code></td>
@@ -174,13 +180,14 @@ case 'contratos':
           </td>
           <td>$<?= number_format($r['costo_final'], 2) ?></td>
           <td><span class="badge bg-<?= $r['estatus'] === 'activo' ? 'success' : 'secondary' ?>"><?= e($r['estatus']) ?></span></td>
+          <td class="<?= $clase ?>" title="Fecha programada: <?= e($fecha ?? 'No definida') ?>"><?= $texto ?></td>
           <td>
             <a href="?r=cobrador.gestion&id_contrato=<?= urlencode($r['id_contrato']) ?>" class="btn btn-sm btn-outline-success">📝 Registrar gestión</a>
             <?php if ($link_maps): ?><a href="<?= $link_maps ?>" target="_blank" class="btn btn-sm btn-outline-primary">🗺️ Ruta</a><?php endif; ?>
           </td>
         </tr>
       <?php endforeach; ?>
-      <?php if (empty($rows)): ?><tr><td colspan="6" class="text-center text-muted">Sin registros</td></tr><?php endif; ?>
+      <?php if (empty($rows)): ?><tr><td colspan="7" class="text-center text-muted">Sin registros</td></tr><?php endif; ?>
       </tbody>
     </table>
   </div>
@@ -188,7 +195,7 @@ case 'contratos':
   break;
 
 // -------------------------------------------------------------
-// NUEVA ACCIÓN: Registrar gestión (con o sin pago)
+// Registrar gestión (con o sin pago)
 // -------------------------------------------------------------
 case 'gestion':
   $id_contrato = (int)($_GET['id_contrato'] ?? 0);
@@ -230,9 +237,7 @@ case 'gestion':
           navigator.geolocation.getCurrentPosition(pos => {
             document.getElementById('latitud').value = pos.coords.latitude.toFixed(6);
             document.getElementById('longitud').value = pos.coords.longitude.toFixed(6);
-          }, err => alert("No se pudo obtener ubicación"));
-        } else {
-          alert("Geolocalización no disponible");
+          }, err => console.warn("No se pudo obtener ubicación"));
         }
         </script>
         <div class="d-flex gap-2 mt-3">
@@ -245,11 +250,11 @@ case 'gestion':
   <?php render('Registrar gestión', ob_get_clean());
   break;
 
-// -------------------------------------------------------------
 case 'ticket':
   $id_abono = (int)($_GET['id_abono'] ?? 0);
   $data = qone("SELECT a.id_abono, a.id_contrato, a.cant_abono, a.fecha_registro, t.titular 
-                FROM futuro_abonos a LEFT JOIN vw_titular_contrato t ON t.id_contrato = a.id_contrato 
+                FROM futuro_abonos a 
+                LEFT JOIN vw_titular_contrato t ON t.id_contrato = a.id_contrato 
                 WHERE a.id_abono=?", [$id_abono]);
   if (!$data) { flash("<div class='alert alert-warning'>Ticket no encontrado.</div>"); redirect('cobrador.contratos'); }
   ob_start(); ?>
