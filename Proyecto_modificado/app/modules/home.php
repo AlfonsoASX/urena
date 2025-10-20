@@ -72,14 +72,6 @@ ob_start(); ?>
 </style>
 
 <div class="py-3 py-md-4">
-  <!-- Header -->
-  <div class="p-3 p-md-4 mb-4 bg-light rounded-3">
-    <div class="container-fluid py-2">
-      <h1 class="display-6 mb-1">Panel principal</h1>
-      <p class="lead mb-0">Pagos, vendedores, cobradores e inventarios — todo al alcance.</p>
-    </div>
-  </div>
-
   <!-- KPIs -->
   <div class="row g-3 mb-4">
     <div class="col-6 col-md-3">
@@ -120,6 +112,124 @@ ob_start(); ?>
     </div>
   </div>
 
+
+
+  <!-- Gráficas de recuperación -->
+  <div class="row g-3 mb-4">
+    <?php
+    // ===== Últimos 30 días =====
+    try {
+      $abonos30 = qall("
+        SELECT DATE(fecha_registro) AS fecha, 
+               COALESCE(SUM(cant_abono),0) AS total
+        FROM futuro_abonos
+        WHERE fecha_registro >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+        GROUP BY DATE(fecha_registro)
+        ORDER BY fecha ASC
+      ");
+    } catch (Throwable $e) { $abonos30 = []; }
+
+    // ===== Últimos 12 meses =====
+    try {
+      $abonos12 = qall("
+        SELECT DATE_FORMAT(fecha_registro, '%Y-%m') AS mes, 
+               COALESCE(SUM(cant_abono),0) AS total
+        FROM futuro_abonos
+        WHERE fecha_registro >= DATE_SUB(CURDATE(), INTERVAL 12 MONTH)
+        GROUP BY DATE_FORMAT(fecha_registro, '%Y-%m')
+        ORDER BY mes ASC
+      ");
+    } catch (Throwable $e) { $abonos12 = []; }
+
+    // Convertir a arrays JS
+    $dias_labels = array_map(fn($r)=>$r['fecha'], $abonos30);
+    $dias_values = array_map(fn($r)=>(float)$r['total'], $abonos30);
+    $mes_labels  = array_map(fn($r)=>$r['mes'], $abonos12);
+    $mes_values  = array_map(fn($r)=>(float)$r['total'], $abonos12);
+    ?>
+    <div class="col-12 col-lg-6">
+      <div class="card shadow-sm h-100">
+        <div class="card-body">
+          <h2 class="h6 mb-3">Recuperado últimos 30 días</h2>
+          <canvas id="chartDias" height="180"></canvas>
+        </div>
+      </div>
+    </div>
+    <div class="col-12 col-lg-6">
+      <div class="card shadow-sm h-100">
+        <div class="card-body">
+          <h2 class="h6 mb-3">Recuperado últimos 12 meses</h2>
+          <canvas id="chartMeses" height="180"></canvas>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script>
+  document.addEventListener('DOMContentLoaded', function(){
+    const diasLabels = <?= json_encode($dias_labels) ?>;
+    const diasData   = <?= json_encode($dias_values) ?>;
+    const mesesLabels= <?= json_encode($mes_labels) ?>;
+    const mesesData  = <?= json_encode($mes_values) ?>;
+
+    // ====== Últimos 30 días ======
+    new Chart(document.getElementById('chartDias'), {
+      type: 'bar',
+      data: {
+        labels: diasLabels,
+        datasets: [{
+          label: 'Monto recuperado ($)',
+          data: diasData,
+          borderWidth: 1,
+          backgroundColor: 'rgba(54, 162, 235, 0.5)',
+          borderColor: 'rgba(54, 162, 235, 1)',
+        }]
+      },
+      options: {
+        scales: {
+          y: { beginAtZero: true, ticks: { callback: val => '$' + val.toLocaleString() } }
+        },
+        plugins: {
+          legend: { display: false },
+          tooltip: { callbacks: { label: ctx => '$' + ctx.parsed.y.toLocaleString() } }
+        }
+      }
+    });
+
+    // ====== Últimos 12 meses ======
+    new Chart(document.getElementById('chartMeses'), {
+      type: 'line',
+      data: {
+        labels: mesesLabels.map(m => m.replace('-', '/')),
+        datasets: [{
+          label: 'Monto recuperado ($)',
+          data: mesesData,
+          borderWidth: 2,
+          fill: true,
+          tension: 0.3,
+          borderColor: 'rgba(75, 192, 192, 1)',
+          backgroundColor: 'rgba(75, 192, 192, 0.2)'
+        }]
+      },
+      options: {
+        scales: {
+          y: { beginAtZero: true, ticks: { callback: val => '$' + val.toLocaleString() } }
+        },
+        plugins: {
+          legend: { display: false },
+          tooltip: { callbacks: { label: ctx => '$' + ctx.parsed.y.toLocaleString() } }
+        }
+      }
+    });
+  });
+  </script>
+
+
+
+
+
+
   <!-- Acciones rápidas -->
   <div class="row g-3 mb-4">
     <div class="col-lg-6">
@@ -145,29 +255,92 @@ ob_start(); ?>
         </div>
       </div>
     </div>
-    <div class="col-lg-6">
+
+
+<div class="col-12 col-md-6 col-lg-3">
+  <div class="card shadow-sm h-100">
+    <div class="card-body d-grid">
+      <h2 class="h6">Contratos</h2>
+      <a class="btn btn-primary" href="?r=contratos.nuevo">Nuevo contrato</a>
+      <a class="btn btn-outline-secondary mt-2" href="?r=pagos.contratos">Ver todos</a>
+    </div>
+  </div>
+</div>
+
+
+
+<!-- ===== RUTAS: Accesos rápidos ===== -->
+<section class="mb-4">
+  <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-2 mb-2">
+    <h2 class="h5 m-0">Rutas · Contratos & Cobradores</h2>
+    <div class="d-flex gap-2">
+      <a href="?r=rutas.contratos" class="btn btn-outline-primary btn-sm">
+        Ver contratos & asignar cobrador
+      </a>
+      <a href="?r=rutas.cobradores" class="btn btn-outline-secondary btn-sm">
+        Ver lista de cobradores
+      </a>
+    </div>
+  </div>
+
+  <!-- Tarjetas de acceso -->
+  <div class="row g-3">
+    <div class="col-md-6">
       <div class="card shadow-sm h-100">
-        <div class="card-body">
-          <h2 class="h5">Vendedores &amp; Cobradores</h2>
-          <div class="row g-2 mb-2">
-            <div class="col-12 col-md-6">
-              <label class="form-label">Seleccionar persona</label>
-              <select id="personaSelect" class="form-select">
-                <option value="">— Selecciona —</option>
-                <?php foreach($personal as $p): ?>
-                  <option value="<?= (int)$p['id_personal'] ?>"><?= e($p['nombre']) ?></option>
-                <?php endforeach; ?>
-              </select>
+        <div class="card-body d-flex flex-column">
+          <div class="d-flex align-items-center mb-2">
+            <div class="rounded-circle bg-primary bg-opacity-10 p-2 me-2">
+              <span class="text-primary fw-bold">RC</span>
             </div>
-            <div class="col-12 col-md-6 d-grid gap-2">
-              <a id="btnCorteCobrador" class="btn btn-outline-primary disabled" href="#">Corte cobrador</a>
-              <a id="btnCorteVendedor" class="btn btn-outline-secondary disabled" href="#">Corte vendedor</a>
-            </div>
+            <h3 class="h6 m-0">Contratos → Asignación de cobrador</h3>
           </div>
-          <div class="text-muted small">Consejo: usa los cortes para pagar por periodo específico a la persona seleccionada.</div>
+          <p class="text-muted small mb-3">
+            Consulta todos los contratos y asigna o reasigna cobrador por fila. 
+            Soporta asignación masiva con selección múltiple.
+          </p>
+          <div class="mt-auto d-flex justify-content-between align-items-center">
+            <a href="?r=rutas.contratos" class="btn btn-sm btn-primary">Ir a contratos</a>
+          </div>
+          
         </div>
       </div>
     </div>
+
+    <div class="col-md-6">
+      <div class="card shadow-sm h-100">
+        <div class="card-body d-flex flex-column">
+          <div class="d-flex align-items-center mb-2">
+            <div class="rounded-circle bg-secondary bg-opacity-10 p-2 me-2">
+              <span class="text-secondary fw-bold">CB</span>
+            </div>
+            <h3 class="h6 m-0">Cobradores → Rutas</h3>
+          </div>
+          <p class="text-muted small mb-3">
+            Ve el listado de cobradores y, al dar clic, consulta todos los contratos 
+            actualmente asignados a cada uno.
+          </p>
+          <div class="mt-auto d-flex justify-content-between align-items-center">
+            <a href="?r=rutas.cobradores" class="btn btn-sm btn-secondary">Ir a cobradores</a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Buscador rápido hacia rutas.contratos (opcional) -->
+  <form class="row g-2 mt-3" method="get" action="">
+    <input type="hidden" name="r" value="rutas.contratos">
+    <div class="col-md-9">
+      <input type="search" name="q" class="form-control" placeholder="Buscar contrato por folio, titular o vendedor…">
+    </div>
+    <div class="col-md-3 d-grid">
+      <button class="btn btn-outline-primary">Buscar en contratos</button>
+    </div>
+  </form>
+</section>
+
+
+
   </div>
 
   <!-- Listas rápidas -->
