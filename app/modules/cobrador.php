@@ -291,7 +291,7 @@ case 'contratos':
           <th><?= $sortLink('prioridad', '📅 Prox. Visita') ?></th>
           <th>🕒 Ult. Gestión</th>
           <th>📝 Nota</th>
-          <th style="width:120px">Acción</th>
+          <th style="width:220px">Acciones</th>
         </tr>
       </thead>
       <tbody>
@@ -343,9 +343,20 @@ case 'contratos':
           </td>
           <td>
             <div class="btn-group btn-group-sm">
-              <a href="?r=cobrador.gestion&id_contrato=<?= $r['id_contrato'] ?>" class="btn btn-outline-success" title="Registrar Pago/Visita">💲</a>
+              <a href="?r=cobrador.gestion&id_contrato=<?= $r['id_contrato'] ?>" class="btn btn-outline-success" title="Registrar gestión">
+                💲 <span class="ms-1">Gestión</span>
+              </a>
+              <a href="?r=cobrador.pagos&id_contrato=<?= $r['id_contrato'] ?>" class="btn btn-outline-dark" title="Ver pagos">
+                🧾 <span class="ms-1">Pagos</span>
+              </a>
               <?php if ($link_maps): ?>
-                <a href="<?= $link_maps ?>" target="_blank" class="btn btn-outline-primary" title="Ver en Mapa">🗺️</a>
+                <a href="<?= $link_maps ?>" target="_blank" class="btn btn-outline-primary" title="Ver en mapa">
+                  🗺️ <span class="ms-1">Mapa</span>
+                </a>
+              <?php else: ?>
+                <a href="#" class="btn btn-outline-primary disabled" tabindex="-1" aria-disabled="true" title="Sin dirección">
+                  🗺️ <span class="ms-1">Mapa</span>
+                </a>
               <?php endif; ?>
             </div>
           </td>
@@ -446,6 +457,98 @@ case 'gestion':
     </div>
   </div>
   <?php render('Registrar gestión', ob_get_clean());
+  break;
+
+case 'pagos':
+  $id_contrato = (int)($_GET['id_contrato'] ?? 0);
+  if ($id_contrato <= 0) {
+    flash("<div class='alert alert-warning'>Contrato inválido.</div>");
+    redirect('cobrador.contratos');
+  }
+
+  $c = qone("SELECT c.id_contrato, c.costo_final, t.titular
+             FROM futuro_contratos c
+             LEFT JOIN vw_titular_contrato t ON t.id_contrato=c.id_contrato
+             WHERE c.id_contrato=? LIMIT 1", [$id_contrato]);
+
+  if (!$c) {
+    flash("<div class='alert alert-warning'>Contrato no encontrado.</div>");
+    redirect('cobrador.contratos');
+  }
+
+  $pagos = qall("
+    SELECT a.id_abono, a.fecha_registro, a.cant_abono, a.saldo
+    FROM futuro_abonos a
+    WHERE a.id_contrato=?
+    ORDER BY a.fecha_registro DESC, a.id_abono DESC
+  ", [$id_contrato]);
+
+  $sum = qone("SELECT COALESCE(SUM(cant_abono),0) AS total_pagado FROM futuro_abonos WHERE id_contrato=?", [$id_contrato]);
+  $total_pagado = (float)($sum['total_pagado'] ?? 0);
+  $costo_final = (float)($c['costo_final'] ?? 0);
+  $saldo_calc = $costo_final - $total_pagado;
+  if ($saldo_calc < 0) $saldo_calc = 0;
+
+  ob_start(); ?>
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <div>
+      <h1 class="h4 m-0">Pagos del contrato #<?= e($id_contrato) ?></h1>
+      <div class="text-muted small">
+        <span class="me-2"><strong>Titular:</strong> <?= e($c['titular'] ?? '—') ?></span>
+        <span class="me-2"><strong>Costo:</strong> $<?= number_format($costo_final, 2) ?></span>
+        <span class="me-2"><strong>Pagado:</strong> $<?= number_format($total_pagado, 2) ?></span>
+        <span><strong>Saldo:</strong> <span class="text-danger fw-semibold">$<?= number_format($saldo_calc, 2) ?></span></span>
+      </div>
+    </div>
+    <div>
+      <a href="?r=cobrador.contratos" class="btn btn-sm btn-outline-secondary">← Volver</a>
+    </div>
+  </div>
+
+  <div class="card shadow-sm">
+    <div class="card-body">
+      <div class="table-responsive">
+        <table class="table table-sm table-striped align-middle">
+          <thead class="table-light">
+            <tr>
+              <th>Folio</th>
+              <th>Fecha</th>
+              <th class="text-end">Monto</th>
+              <th class="text-end">Saldo</th>
+              <th style="width:170px">Acciones</th>
+            </tr>
+          </thead>
+          <tbody>
+          <?php foreach ($pagos as $p): ?>
+            <tr>
+              <td><small class="font-monospace">#<?= str_pad((string)$p['id_abono'], 6, '0', STR_PAD_LEFT) ?></small></td>
+              <td><small><?= $p['fecha_registro'] ? date('d/m/Y H:i', strtotime($p['fecha_registro'])) : '—' ?></small></td>
+              <td class="text-end"><small>$<?= number_format((float)$p['cant_abono'], 2) ?></small></td>
+              <td class="text-end"><small class="text-danger">$<?= number_format((float)$p['saldo'], 2) ?></small></td>
+              <td>
+                <div class="btn-group btn-group-sm">
+                  <a href="?r=cobrador.ticket&id_abono=<?= (int)$p['id_abono'] ?>" class="btn btn-outline-primary" title="Reimprimir ticket">
+                    🧾 <span class="ms-1">Reimprimir</span>
+                  </a>
+                  <a href="modules/imprimirL.php?id_abono=<?= (int)$p['id_abono'] ?>" target="_blank" class="btn btn-outline-secondary" title="Ver PDF">
+                    📄 <span class="ms-1">PDF</span>
+                  </a>
+                </div>
+              </td>
+            </tr>
+          <?php endforeach; ?>
+
+          <?php if (empty($pagos)): ?>
+            <tr>
+              <td colspan="5" class="text-center text-muted py-4">No hay pagos registrados para este contrato.</td>
+            </tr>
+          <?php endif; ?>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+  <?php render('Pagos del contrato', ob_get_clean());
   break;
 
 case 'ticket':
