@@ -1,10 +1,14 @@
 <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
   <div class="container-fluid">
-    <a class="navbar-brand" href="?r=home.index">Ureña</a>
+    <img src="img/logo.png">
+    <a class="navbar-brand" href="?r=home.index">Inicio</a>
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#mainNav">
       <span class="navbar-toggler-icon"></span>
     </button>
     <div class="collapse navbar-collapse" id="mainNav">
+<!--    
+
+
       <ul class="navbar-nav me-auto">
         <?php if (user_has_role(['administradora','auxiliar','vendedor','cobrador'])): ?>
           <li class="nav-item"><a class="nav-link" href="?r=servicios.listar">Servicios</a></li>
@@ -33,6 +37,9 @@
           <li class="nav-item"><a class="nav-link" href="?r=proveedores.listar">Proveedores</a></li>
         <?php endif; ?>
       </ul>
+    -->
+
+
       <ul class="navbar-nav ms-auto">
         <?php if (logged_in()): ?>
           <li class="nav-item"><span class="navbar-text text-white me-3"><?= e(current_user()['nombre'] ?? current_user()['usuario'] ?? '') ?> (<?= e(current_user()['perfil'] ?? '-') ?>)</span></li>
@@ -42,5 +49,6 @@
         <?php endif; ?>
       </ul>
     </div>
+
   </div>
 </nav>

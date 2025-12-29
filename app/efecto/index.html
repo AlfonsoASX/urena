@@ -1,0 +1,512 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>Telón</title>
+  <style>
+    html, body { height: 100%; margin: 0; }
+    body { overflow: hidden; background: #000; }
+
+    /* Contenido del sitio (lo que se revela cuando se abre el telón) */
+    #background {
+      position: fixed; inset: 0;
+      display: grid; place-items: center;
+      color: white;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      background:
+        radial-gradient(1200px 800px at 50% 30%, rgba(255,255,255,.14), rgba(0,0,0,0) 60%),
+        linear-gradient(120deg, #0b1220, #05060a 55%, #090c12);
+    }
+
+    /* Capa del telón (WebGL) */
+    #curtain {
+      position: fixed; inset: 0;
+      z-index: 10;
+      pointer-events: none;
+    }
+
+    /* Evita “letreritos”/selección accidental */
+    * { -webkit-tap-highlight-color: transparent; user-select: none; }
+    canvas { display:block; width:100%; height:100%; }
+  </style>
+</head>
+
+<body>
+  <div id="background">
+    <div style="text-align:center; padding:24px;">
+      <div style="font-size: clamp(26px, 4vw, 56px); font-weight: 800; letter-spacing:.5px;">Tu sitio aquí!</div>
+
+
+
+    </div>
+  </div>
+
+  <div id="curtain"></div>
+
+  <!-- IMPORTANTE: sin esto te sale "THREE is not defined" -->
+  <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+
+  <script>
+  (() => {
+    const IMG = "telon.jpeg"; // en el mismo folder que este HTML
+
+    const container = document.getElementById("curtain");
+
+    // ---------- Config performance (mobile-friendly) ----------
+    const isMobile = matchMedia("(max-width: 820px)").matches || /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+    const DPR = Math.min(window.devicePixelRatio || 1, isMobile ? 1.6 : 2);
+
+    // Más segmentos = más pliegues, pero más costo.
+    const SEG_X = isMobile ? 40 : 70;
+    const SEG_Y = isMobile ? 55 : 95;
+
+    // ---------- Three.js setup ----------
+    const scene = new THREE.Scene();
+
+    const camera = new THREE.PerspectiveCamera(28, 1, 0.01, 100);
+    camera.position.set(0, 0, 5.2);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setPixelRatio(DPR);
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setClearAlpha(0);
+    container.appendChild(renderer.domElement);
+
+    // Lighting (la clave para que “las arrugas” se vean)
+    const ambient = new THREE.AmbientLight(0xffffff, 0.55);
+    scene.add(ambient);
+
+    const key = new THREE.DirectionalLight(0xffffff, 0.95);
+    key.position.set(2.2, 2.8, 2.2);
+    scene.add(key);
+
+    const fill = new THREE.DirectionalLight(0xffffff, 0.45);
+    fill.position.set(-2.6, 1.8, 1.4);
+    scene.add(fill);
+
+    // ---------- Helpers ----------
+    function clamp(v, a, b){ return Math.max(a, Math.min(b, v)); }
+    function lerp(a,b,t){ return a + (b-a)*t; }
+
+    // Fit plane to screen so it ALWAYS covers 100% (desktop + mobile)
+    function getPlaneScaleToCover() {
+      const z = 0;
+      const dist = camera.position.z - z;
+      const vFov = THREE.MathUtils.degToRad(camera.fov);
+      const viewH = 2 * Math.tan(vFov / 2) * dist;
+      const viewW = viewH * camera.aspect;
+      // Plane base size will be 2 units wide (from -1 to 1), we scale it to cover the view
+      return { sx: viewW / 2, sy: viewH / 2, viewW, viewH };
+    }
+
+    // ---------- Simple cloth simulation (Verlet) ----------
+    class Cloth {
+      constructor(width, height, segX, segY, opts) {
+        this.width = width;
+        this.height = height;
+        this.segX = segX;
+        this.segY = segY;
+
+        this.gravity = new THREE.Vector3(0, opts.gravity ?? -2.2, 0);
+        this.damping = opts.damping ?? 0.985;
+        this.iterations = opts.iterations ?? (isMobile ? 7 : 11);
+
+        this.particles = [];
+        this.constraints = [];
+
+        // Build particles in a grid
+        for (let y = 0; y <= segY; y++) {
+          for (let x = 0; x <= segX; x++) {
+            const u = x / segX;
+            const v = y / segY;
+
+            const px = (u - 0.5) * width;
+            const py = (0.5 - v) * height;
+            const pz = 0;
+
+            const pos = new THREE.Vector3(px, py, pz);
+            this.particles.push({
+              pos: pos.clone(),
+              prev: pos.clone(),
+              acc: new THREE.Vector3(),
+              pinned: false,
+              pinPos: pos.clone()
+            });
+          }
+        }
+
+        // Structural constraints (horizontal + vertical)
+        const idx = (x,y) => x + (segX + 1) * y;
+
+        const restX = width / segX;
+        const restY = height / segY;
+
+        for (let y = 0; y <= segY; y++) {
+          for (let x = 0; x <= segX; x++) {
+            if (x < segX) this.constraints.push([idx(x,y), idx(x+1,y), restX]);
+            if (y < segY) this.constraints.push([idx(x,y), idx(x,y+1), restY]);
+
+            // Shear constraints (diagonals) for nicer folds
+            if (x < segX && y < segY) {
+              const diag = Math.hypot(restX, restY);
+              this.constraints.push([idx(x,y), idx(x+1,y+1), diag]);
+              this.constraints.push([idx(x+1,y), idx(x,y+1), diag]);
+            }
+          }
+        }
+
+        this.idx = idx;
+        this.pinTopRow();
+      }
+
+      pinTopRow() {
+        // Pin all top particles (y=0) so it “jala de arriba”
+        for (let x = 0; x <= this.segX; x++) {
+          const p = this.particles[this.idx(x,0)];
+          p.pinned = true;
+          p.pinPos.copy(p.pos);
+        }
+      }
+
+      addForce(force) {
+        for (const p of this.particles) p.acc.add(force);
+      }
+
+      step(dt, externalForcesFn) {
+        // Forces
+        for (const p of this.particles) {
+          p.acc.set(0,0,0);
+        }
+        this.addForce(this.gravity);
+
+        if (externalForcesFn) externalForcesFn(this, dt);
+
+        // Integrate (Verlet)
+        const dt2 = dt * dt;
+        for (const p of this.particles) {
+          if (p.pinned) {
+            p.pos.copy(p.pinPos);
+            p.prev.copy(p.pinPos);
+            continue;
+          }
+          const vel = p.pos.clone().sub(p.prev).multiplyScalar(this.damping);
+          const next = p.pos.clone().add(vel).add(p.acc.clone().multiplyScalar(dt2));
+          p.prev.copy(p.pos);
+          p.pos.copy(next);
+        }
+
+        // Satisfy constraints
+        for (let it=0; it<this.iterations; it++) {
+          for (const [a,b,rest] of this.constraints) {
+            const p1 = this.particles[a];
+            const p2 = this.particles[b];
+
+            const delta = p2.pos.clone().sub(p1.pos);
+            const d = delta.length() || 1e-6;
+            const diff = (d - rest) / d;
+
+            // split correction
+            const corr = delta.multiplyScalar(0.5 * diff);
+
+            if (!p1.pinned) p1.pos.add(corr);
+            if (!p2.pinned) p2.pos.sub(corr);
+          }
+
+          // Keep pinned stable
+          for (let x=0; x<=this.segX; x++) {
+            const p = this.particles[this.idx(x,0)];
+            p.pos.copy(p.pinPos);
+          }
+        }
+      }
+    }
+
+    // ---------- Build curtain meshes (left/right) ----------
+    const loader = new THREE.TextureLoader();
+    loader.setCrossOrigin("anonymous");
+
+    let leftMesh, rightMesh;
+    let leftCloth, rightCloth;
+    let materialL, materialR;
+
+    // Animation timing (más lento)
+    const OPEN_DURATION = 3.8;     // apertura lenta
+    const EXIT_DURATION = 1.2;     // salir de pantalla
+    const TOTAL = OPEN_DURATION + EXIT_DURATION;
+
+    // Motion tuning: “telón real”
+    const pullStrength = isMobile ? 10.5 : 13.5;    // jalón superior lateral
+    const sagStrength  = isMobile ? 0.9  : 1.15;    // caída natural
+    const waveStrength = isMobile ? 0.45 : 0.65;    // ondulación/inercia
+
+    // Exit: se va hacia los lados + un poquito hacia arriba (como recogido)
+    const exitBoost = isMobile ? 1.2 : 1.35;
+
+    function buildHalf(isLeft, texture, planeW, planeH) {
+      // PlaneGeometry: HALF width
+      const geo = new THREE.PlaneGeometry(planeW, planeH, SEG_X, SEG_Y);
+
+      // Fix UVs so texture is split perfectly from center
+      // Plane u range is [0..1] on each half; map left to [0..0.5], right to [0.5..1]
+      const uv = geo.attributes.uv;
+      for (let i=0; i<uv.count; i++) {
+        const u = uv.getX(i);
+        const v = uv.getY(i);
+        const mappedU = isLeft ? (u * 0.5) : (0.5 + u * 0.5);
+        uv.setXY(i, mappedU, v);
+      }
+      uv.needsUpdate = true;
+
+      const mat = new THREE.MeshPhongMaterial({
+        map: texture,
+        side: THREE.DoubleSide,
+        transparent: true,
+        shininess: 18,
+        specular: new THREE.Color(0x222222),
+      });
+
+      const mesh = new THREE.Mesh(geo, mat);
+
+      // Position halves touching at center
+      mesh.position.x = isLeft ? (-planeW/2) : (planeW/2);
+      mesh.position.y = 0;
+      mesh.position.z = 0;
+
+      // Cloth sim width/height match geometry
+      const cloth = new Cloth(planeW, planeH, SEG_X, SEG_Y, {
+        gravity: -2.0 * sagStrength,
+        damping: isMobile ? 0.984 : 0.988,
+        iterations: isMobile ? 7 : 11,
+      });
+
+      // Offset cloth initial positions so they match mesh space
+      for (const p of cloth.particles) {
+        p.pos.x += mesh.position.x;
+        p.prev.x += mesh.position.x;
+        p.pinPos.x += mesh.position.x;
+      }
+
+      return { mesh, mat, cloth };
+    }
+
+    function updateGeometryFromCloth(mesh, cloth) {
+      const posAttr = mesh.geometry.attributes.position;
+      // Cloth grid is (SEG_X+1)*(SEG_Y+1) matches PlaneGeometry vertex grid
+      for (let i=0; i<cloth.particles.length; i++) {
+        const p = cloth.particles[i].pos;
+        // Convert world-ish particle position into mesh local
+        posAttr.setXYZ(i, p.x - mesh.position.x, p.y - mesh.position.y, p.z - mesh.position.z);
+      }
+      posAttr.needsUpdate = true;
+      mesh.geometry.computeVertexNormals();
+    }
+
+    function onResize() {
+      const w = window.innerWidth;
+      const h = window.innerHeight;
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+      renderer.setSize(w, h);
+
+      // Rebuild to fit screen if already created
+      if (!leftMesh || !rightMesh) return;
+      // Instead of trying to re-parameterize cloth mid-flight, we simply hard reload if resize happens.
+      // On mobile orientation changes this is the cleanest.
+      location.reload();
+    }
+    window.addEventListener("resize", () => onResize(), { passive: true });
+
+    // ---------- Load texture + start ----------
+    loader.load(
+      IMG,
+      (tex) => {
+        tex.minFilter = THREE.LinearMipmapLinearFilter;
+        tex.magFilter = THREE.LinearFilter;
+        tex.anisotropy = Math.min(renderer.capabilities.getMaxAnisotropy?.() || 1, 8);
+
+        // Fit plane to cover the screen, then split into halves
+        const w = window.innerWidth, h = window.innerHeight;
+        camera.aspect = w / h;
+        camera.updateProjectionMatrix();
+
+        const { sx, sy, viewW, viewH } = getPlaneScaleToCover();
+
+        // Our base plane is width=2, height=2. We scale to cover viewport.
+        // Choose a plane height that covers viewH; and plane width that covers viewW.
+        // We’ll work in world units directly:
+        const planeH = viewH;
+        const planeW = viewW;
+
+        const halfW = planeW / 2;
+
+        // Build halves
+        const L = buildHalf(true, tex, halfW, planeH);
+        const R = buildHalf(false, tex, halfW, planeH);
+
+        leftMesh = L.mesh; rightMesh = R.mesh;
+        materialL = L.mat; materialR = R.mat;
+        leftCloth = L.cloth; rightCloth = R.cloth;
+
+        scene.add(leftMesh);
+        scene.add(rightMesh);
+
+        // Subtle depth so the center seam looks like fabric overlap
+        leftMesh.position.z = 0.002;
+        rightMesh.position.z = 0.001;
+
+        // ---------- Animation loop ----------
+        let start = performance.now();
+        let last = start;
+
+        // State: 0..1 open progress, 0..1 exit progress
+        function animate(now) {
+          const t = (now - start) / 1000;
+          const dt = clamp((now - last) / 1000, 0.008, 0.033);
+          last = now;
+
+          // Easing: slow, heavy curtain
+          const openT = clamp(t / OPEN_DURATION, 0, 1);
+          // smoothstep-ish, then slow tail
+          const openEase = openT < 1
+            ? (openT*openT*(3 - 2*openT))
+            : 1;
+
+          const exitT = clamp((t - OPEN_DURATION) / EXIT_DURATION, 0, 1);
+          const exitEase = exitT*exitT*(3 - 2*exitT);
+
+          // Targets
+          // How far each half moves sideways at full open:
+          const sideTarget = (getPlaneScaleToCover().viewW) * 0.72; // covers screen + offscreen pull
+          const side = sideTarget * openEase;
+
+          // Cloth external forces: pull from top corners, propagate downward
+          const applyForces = (cloth, dt, isLeft) => {
+            const sx = cloth.segX, sy = cloth.segY;
+            const idx = cloth.idx;
+
+            // Pin line follows a moving rod: top row positions “run” sideways and a bit up on exit
+            for (let x=0; x<=sx; x++) {
+              const p = cloth.particles[idx(x,0)];
+              const u = x / sx;
+
+              // Corner gets more pull than center (classic stage curtain)
+              const cornerBias = Math.pow(Math.abs(u - 0.5) * 2, 1.6); // 0 center, 1 edges
+              const direction = isLeft ? -1 : 1;
+
+              // Open motion
+              const openPull = direction * side * (0.35 + 0.65*cornerBias);
+
+              // Exit: move even further offscreen and slightly upward (like collected)
+              const exitPull = direction * (sideTarget * 0.55) * exitEase * exitBoost;
+              const exitUp   = (getPlaneScaleToCover().viewH * 0.12) * exitEase;
+
+              // Small up/down ripple for inertia
+              const ripple = Math.sin((t * 2.3) + u * 6.5) * waveStrength * (0.12 + 0.18*cornerBias) * (1 - exitEase);
+
+              // Set pinned position
+              p.pinPos.x = p.pos.x = (isLeft ? -cloth.width/2 : cloth.width/2) + (isLeft ? -cloth.width/2 : cloth.width/2) + openPull + exitPull;
+              // The line above is intentionally “over-pulled” to create gathering; but we keep it stable by pinning.
+              // Fix: anchor relative to original pinPos baseline:
+              // We stored original in p.pinPos at creation; so rebuild baseline from initial y.
+              // However we overwrote it; so we’ll use current y as stable and only update x/y offsets:
+              p.pinPos.y = p.pos.y = (cloth.height/2) + ripple + exitUp; // top edge slightly up on exit
+
+              p.pinPos.z = p.pos.z = 0;
+              p.prev.copy(p.pos);
+            }
+
+            // Pull also via forces near top rows to transmit movement downward
+            const topBand = Math.max(2, Math.floor(sy * 0.14));
+            for (let y=1; y<=topBand; y++) {
+              for (let x=0; x<=sx; x++) {
+                const p = cloth.particles[idx(x,y)];
+                const v = y / sy;
+                const u = x / sx;
+
+                // Stronger near top, decays downward
+                const falloff = Math.pow(1 - v, 2.4);
+
+                const direction = isLeft ? -1 : 1;
+
+                // Force sideways (opening)
+                const fSide = direction * pullStrength * falloff * (0.55 + 0.45*Math.sin(u*Math.PI));
+
+                // Add “gathering” pull toward center line at lower rows (creates folds bunching)
+                const centerLineX = isLeft ? (-cloth.width/2) : (cloth.width/2);
+                const towardCenter = (centerLineX - p.pos.x) * 0.18 * (1 - openEase) + (centerLineX - p.pos.x) * 0.35 * openEase;
+
+                // Vertical tug (top-down transmission)
+                const fDown = -0.35 * pullStrength * falloff;
+
+                // Slight depth flutter so lighting shows wrinkles
+                const zWave = Math.sin(t*3.0 + u*10.0 + v*8.0) * (0.035 + 0.06*falloff) * (1 - exitEase);
+
+                p.acc.x += (fSide + towardCenter) * 0.9;
+                p.acc.y += fDown * 0.25;
+                p.acc.z += zWave;
+              }
+            }
+
+            // During exit: add a stronger outward force and fade
+            if (exitT > 0) {
+              for (let y=1; y<=sy; y++) {
+                for (let x=0; x<=sx; x++) {
+                  const p = cloth.particles[idx(x,y)];
+                  const v = y / sy;
+                  const direction = isLeft ? -1 : 1;
+                  const falloff = Math.pow(1 - v, 1.2);
+
+                  p.acc.x += direction * (pullStrength * 0.9) * exitEase * falloff;
+                  p.acc.y += (pullStrength * 0.25) * exitEase * falloff; // slight lift
+                }
+              }
+            }
+          };
+
+          // Step cloth
+          leftCloth.step(dt, (cloth, dt) => applyForces(cloth, dt, true));
+          rightCloth.step(dt, (cloth, dt) => applyForces(cloth, dt, false));
+
+          // Update geometry
+          updateGeometryFromCloth(leftMesh, leftCloth);
+          updateGeometryFromCloth(rightMesh, rightCloth);
+
+          // Visual exit: fade + shove offscreen
+          if (exitT > 0) {
+            const alpha = 1 - exitEase;
+            materialL.opacity = alpha;
+            materialR.opacity = alpha;
+
+            // Also move whole meshes a bit outward so they truly leave the screen
+            const extra = getPlaneScaleToCover().viewW * 0.65 * exitEase;
+            leftMesh.position.x -= extra;
+            rightMesh.position.x += extra;
+          }
+
+          renderer.render(scene, camera);
+
+          if (t < TOTAL + 0.12) {
+            requestAnimationFrame(animate);
+          } else {
+            // cleanup: remove the telón completely
+            container.remove();
+            renderer.dispose?.();
+          }
+        }
+
+        // Arranca cuando ya está lista la textura (sitio “cargó”)
+        requestAnimationFrame(animate);
+      },
+      undefined,
+      (err) => {
+        // Si tu server bloquea rutas, aquí cae.
+        // OJO: si abres el HTML con file:// algunos navegadores fallan con texturas.
+        console.error("No se pudo cargar " + IMG + " (revisa nombre/ruta).", err);
+      }
+    );
+
+  })();
+  </script>
+</body>
+</html>

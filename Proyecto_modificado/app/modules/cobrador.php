@@ -35,6 +35,25 @@ function cobrador_contratos(int $id_personal, bool $soloAsignados = true): array
       )) AS direccion,
       c.costo_final,
       c.estatus,
+
+      -- Última gestión (fecha y nota)
+      (
+        SELECT g.fecha_registro 
+        FROM futuro_gestion g 
+        WHERE g.id_contrato = c.id_contrato 
+        ORDER BY g.fecha_registro DESC 
+        LIMIT 1
+      ) AS fecha_ultima_gestion,
+
+      (
+        SELECT g.notas 
+        FROM futuro_gestion g 
+        WHERE g.id_contrato = c.id_contrato 
+        ORDER BY g.fecha_registro DESC 
+        LIMIT 1
+      ) AS ultima_nota,
+
+      -- Próxima visita
       (
         SELECT g.fecha_proxima_visita 
         FROM futuro_gestion g 
@@ -42,6 +61,7 @@ function cobrador_contratos(int $id_personal, bool $soloAsignados = true): array
         ORDER BY g.fecha_registro DESC 
         LIMIT 1
       ) AS fecha_proxima_visita
+
     FROM futuro_contratos c
     " . ($soloAsignados ? "
       INNER JOIN futuro_contrato_cobrador fc ON fc.id_contrato = c.id_contrato
@@ -102,7 +122,45 @@ function cobrador_ticket_visita(string $titular, int $id_contrato, ?string $fech
     <p>El cobrador realizó una visita a su domicilio.</p>
     <p>Si no fue atendido, programaremos una nueva visita.</p>
   </div>
-  <script>window.print();</script>
+  <div id="botones" class="form-inline mt-2 float-right">
+  <!-- Impresora móvil (BluetoothPrint App o WebView con esquema personalizado) -->
+  <a href="my.bluetoothprint.scheme://http://urena.control.mx/modules/imprimirM.php?
+  id_contrato=12345&
+  estatus=activo&
+  tipo_contrato=normal&
+  cobrador=DemoCobrador&
+  costo_final=1500.00&
+  tipo_pago=efectivo&
+  nom_comp_titu=Juan+Pérez&
+  id_abono=999&
+  saldo=500.00&
+  cant_abono=1000.00&
+  fecha_abono=2025-10-24" 
+  class="btn" role="button" style="width: 150px;">Imp. Móvil</a>
+
+
+
+
+  <!-- Impresora local -->
+  <a href="modules/imprimirL.php?
+  id_contrato=12345&
+  estatus=activo&
+  tipo_contrato=normal&
+  cobrador=DemoCobrador&
+  costo_final=1500.00&
+  tipo_pago=efectivo&
+  nom_comp_titu=Juan+Pérez&
+  id_abono=999&
+  saldo=500.00&
+  cant_abono=1000.00&
+  fecha_abono=2025-10-24" 
+  class="btn" role="button" style="width: 150px;">PDF</a>
+
+  <a href="#" onclick="window.print(); return false;">Imprimir</a>
+
+
+</div>
+
 <?php }
 
 // -------------------------------------------------------------
@@ -150,6 +208,8 @@ case 'contratos':
           <th>Monto</th>
           <th>Estatus</th>
           <th>📅 Próxima visita</th>
+          <th>🕒 Última gestión</th>
+          <th>📝 Última nota</th>
           <th style="width:260px">Acciones</th>
         </tr>
       </thead>
@@ -158,7 +218,7 @@ case 'contratos':
         $direccion = trim($r['direccion'] ?? '');
         $link_maps = $direccion ? 'https://www.google.com/maps/search/?api=1&query=' . urlencode($direccion . ', León, Guanajuato') : null;
 
-        // Manejo de color para próxima visita
+        // Color de próxima visita
         $fecha = $r['fecha_proxima_visita'];
         $clase = 'text-muted';
         $texto = 'Sin programar';
@@ -181,13 +241,15 @@ case 'contratos':
           <td>$<?= number_format($r['costo_final'], 2) ?></td>
           <td><span class="badge bg-<?= $r['estatus'] === 'activo' ? 'success' : 'secondary' ?>"><?= e($r['estatus']) ?></span></td>
           <td class="<?= $clase ?>" title="Fecha programada: <?= e($fecha ?? 'No definida') ?>"><?= $texto ?></td>
+          <td><?= e($r['fecha_ultima_gestion'] ?? '—') ?></td>
+          <td><?= e($r['ultima_nota'] ?? '—') ?></td>
           <td>
             <a href="?r=cobrador.gestion&id_contrato=<?= urlencode($r['id_contrato']) ?>" class="btn btn-sm btn-outline-success">📝 Registrar gestión</a>
             <?php if ($link_maps): ?><a href="<?= $link_maps ?>" target="_blank" class="btn btn-sm btn-outline-primary">🗺️ Ruta</a><?php endif; ?>
           </td>
         </tr>
       <?php endforeach; ?>
-      <?php if (empty($rows)): ?><tr><td colspan="7" class="text-center text-muted">Sin registros</td></tr><?php endif; ?>
+      <?php if (empty($rows)): ?><tr><td colspan="9" class="text-center text-muted">Sin registros</td></tr><?php endif; ?>
       </tbody>
     </table>
   </div>
@@ -269,7 +331,12 @@ case 'ticket':
     <hr>
     <p>Gracias por su pago</p>
   </div>
-  <script>window.print();</script>
+
+
+
+
+  <a href="#" onclick="window.print(); return false;">Imprimir página</a>
+
   <?php render('Ticket de pago', ob_get_clean());
   break;
 

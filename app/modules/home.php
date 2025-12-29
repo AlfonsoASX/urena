@@ -72,14 +72,6 @@ ob_start(); ?>
 </style>
 
 <div class="py-3 py-md-4">
-  <!-- Header -->
-  <div class="p-3 p-md-4 mb-4 bg-light rounded-3">
-    <div class="container-fluid py-2">
-      <h1 class="display-6 mb-1">Panel principal</h1>
-      <p class="lead mb-0">Pagos, vendedores, cobradores e inventarios — todo al alcance.</p>
-    </div>
-  </div>
-
   <!-- KPIs -->
   <div class="row g-3 mb-4">
     <div class="col-6 col-md-3">
@@ -120,80 +112,224 @@ ob_start(); ?>
     </div>
   </div>
 
-  <!-- Acciones rápidas -->
+  <!-- Gráficas -->
+  <?php
+  try {
+    $abonos30 = qall("
+      SELECT DATE(fecha_registro) AS fecha, COALESCE(SUM(cant_abono),0) AS total
+      FROM futuro_abonos
+      WHERE fecha_registro >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+      GROUP BY DATE(fecha_registro)
+      ORDER BY fecha ASC
+    ");
+    $abonos12 = qall("
+      SELECT DATE_FORMAT(fecha_registro, '%Y-%m') AS mes, COALESCE(SUM(cant_abono),0) AS total
+      FROM futuro_abonos
+      WHERE fecha_registro >= DATE_SUB(CURDATE(), INTERVAL 12 MONTH)
+      GROUP BY DATE_FORMAT(fecha_registro, '%Y-%m')
+      ORDER BY mes ASC
+    ");
+  } catch (Throwable $e) { $abonos30 = $abonos12 = []; }
+  $dias_labels = array_map(fn($r)=>$r['fecha'],$abonos30);
+  $dias_values = array_map(fn($r)=>(float)$r['total'],$abonos30);
+  $mes_labels  = array_map(fn($r)=>$r['mes'],$abonos12);
+  $mes_values  = array_map(fn($r)=>(float)$r['total'],$abonos12);
+  ?>
   <div class="row g-3 mb-4">
-    <div class="col-lg-6">
+    <div class="col-12 col-lg-6">
       <div class="card shadow-sm h-100">
         <div class="card-body">
-          <h2 class="h5">Pagos</h2>
-          <form class="row g-2 align-items-end mb-3" method="get">
-            <input type="hidden" name="r" value="pagos.nuevo_abono">
-            <div class="col-12 col-sm-6">
-              <label class="form-label">ID de contrato</label>
-              <input type="number" class="form-control" name="id_contrato" min="1" required>
-            </div>
-            <div class="col-12 col-sm-6 d-grid">
-              <button class="btn btn-primary">Capturar abono</button>
-            </div>
-          </form>
-          <div class="d-flex flex-wrap gap-2">
-            <a class="btn btn-outline-primary btn-sm" href="?r=pagos.contratos">Ver contratos</a>
-            <a class="btn btn-outline-secondary btn-sm" href="?r=pagos.comisiones">Capturar comisión</a>
-            <a class="btn btn-outline-dark btn-sm" href="?r=pagos.corte&tipo=cobrador">Corte por cobrador</a>
-            <a class="btn btn-outline-dark btn-sm" href="?r=pagos.corte&tipo=vendedor">Corte por vendedor</a>
-          </div>
+          <h2 class="h6 mb-3">Recuperado últimos 30 días</h2>
+          <canvas id="chartDias" height="180"></canvas>
         </div>
       </div>
     </div>
-    <div class="col-lg-6">
+    <div class="col-12 col-lg-6">
       <div class="card shadow-sm h-100">
         <div class="card-body">
-          <h2 class="h5">Vendedores &amp; Cobradores</h2>
-          <div class="row g-2 mb-2">
-            <div class="col-12 col-md-6">
-              <label class="form-label">Seleccionar persona</label>
-              <select id="personaSelect" class="form-select">
-                <option value="">— Selecciona —</option>
-                <?php foreach($personal as $p): ?>
-                  <option value="<?= (int)$p['id_personal'] ?>"><?= e($p['nombre']) ?></option>
-                <?php endforeach; ?>
-              </select>
-            </div>
-            <div class="col-12 col-md-6 d-grid gap-2">
-              <a id="btnCorteCobrador" class="btn btn-outline-primary disabled" href="#">Corte cobrador</a>
-              <a id="btnCorteVendedor" class="btn btn-outline-secondary disabled" href="#">Corte vendedor</a>
-            </div>
-          </div>
-          <div class="text-muted small">Consejo: usa los cortes para pagar por periodo específico a la persona seleccionada.</div>
+          <h2 class="h6 mb-3">Recuperado últimos 12 meses</h2>
+          <canvas id="chartMeses" height="180"></canvas>
         </div>
       </div>
     </div>
   </div>
 
-  <!-- Listas rápidas -->
-  <div class="row g-3">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script>
+  document.addEventListener('DOMContentLoaded',function(){
+    new Chart(document.getElementById('chartDias'),{
+      type:'bar',
+      data:{labels:<?=json_encode($dias_labels)?>,datasets:[{data:<?=json_encode($dias_values)?>,backgroundColor:'rgba(54,162,235,0.5)',borderColor:'rgba(54,162,235,1)',borderWidth:1}]},
+      options:{scales:{y:{beginAtZero:true}},plugins:{legend:{display:false}}}
+    });
+    new Chart(document.getElementById('chartMeses'),{
+      type:'line',
+      data:{labels:<?=json_encode($mes_labels)?>,datasets:[{data:<?=json_encode($mes_values)?>,borderColor:'rgba(75,192,192,1)',backgroundColor:'rgba(75,192,192,0.2)',tension:.3,fill:true}]},
+      options:{scales:{y:{beginAtZero:true}},plugins:{legend:{display:false}}}
+    });
+  });
+  </script>
+
+  <!-- === GESTIONES & CITAS DEL DÍA === -->
+  <div class="row g-3 mt-4">
+    <!-- Widget: Citas del Día -->
+    <div class="col-12 col-lg-6">
+      <div class="card shadow-sm h-100">
+        <div class="card-body">
+          <h2 class="h6 mb-3">🗓️ Citas del día (para cobrar)</h2>
+          <?php
+          try {
+            $citas = qall("
+              SELECT g.id_contrato, g.fecha_proxima_visita,
+                     c.id_contrato, t.titular, d.colonia,
+                     CONCAT(p.nombre,' ',p.apellido_p) AS cobrador,
+                     CASE 
+                       WHEN g.fecha_proxima_visita IS NULL THEN 'sin_programar'
+                       WHEN g.fecha_proxima_visita < CURDATE() THEN 'vencida'
+                       WHEN DATE(g.fecha_registro)=CURDATE() THEN 'atendida'
+                       ELSE 'pendiente'
+                     END AS estado
+              FROM futuro_gestion g
+              JOIN futuro_contratos c ON c.id_contrato=g.id_contrato
+              LEFT JOIN vw_titular_contrato t ON t.id_contrato=g.id_contrato
+              LEFT JOIN futuro_contrato_cobrador fc ON fc.id_contrato=g.id_contrato
+              LEFT JOIN futuro_personal p ON p.id_personal=fc.id_personal
+              LEFT JOIN titular_contrato tc ON tc.id_contrato=c.id_contrato
+              LEFT JOIN titular_dom td ON td.id_titular=tc.id_titular
+              LEFT JOIN domicilios d ON d.id_domicilio=td.id_domicilio
+              WHERE DATE(g.fecha_proxima_visita)=CURDATE()
+              ORDER BY g.fecha_proxima_visita ASC
+            ");
+          } catch(Throwable $e){ $citas=[]; }
+          ?>
+          <div class="table-responsive">
+            <table class="table table-sm align-middle">
+              <thead><tr><th>#Contrato</th><th>Titular</th><th>Colonia</th><th>Cobrador</th><th>Estado</th></tr></thead>
+              <tbody>
+                <?php if(!$citas): ?>
+                  <tr><td colspan="5" class="text-muted">No hay citas programadas para hoy.</td></tr>
+                <?php else: foreach($citas as $c): 
+                  $badge = match($c['estado']){
+                    'atendida'=>'success','pendiente'=>'warning','vencida'=>'danger',default=>'secondary'
+                  };
+                ?>
+                  <tr>
+                    <td>#<?= (int)$c['id_contrato'] ?></td>
+                    <td><?= e($c['titular'] ?? '-') ?></td>
+                    <td><?= e($c['colonia'] ?? '-') ?></td>
+                    <td><?= e($c['cobrador'] ?? '-') ?></td>
+                    <td><span class="badge bg-<?= $badge ?>"><?= ucfirst($c['estado']) ?></span></td>
+                  </tr>
+                <?php endforeach; endif; ?>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+<?php
+// Obtener gestiones atendidas hoy directamente desde PHP
+try {
+  $gestiones_hoy = qall("
+    SELECT g.latitud, g.longitud,
+           COALESCE(t.titular,'') AS titular,
+           CONCAT(p.nombre,' ',p.apellido_p) AS cobrador
+    FROM futuro_gestion g
+    LEFT JOIN vw_titular_contrato t ON t.id_contrato=g.id_contrato
+    LEFT JOIN futuro_contrato_cobrador fc ON fc.id_contrato=g.id_contrato
+    LEFT JOIN futuro_personal p ON p.id_personal=fc.id_personal
+    WHERE DATE(g.fecha_registro)=CURDATE()
+      AND g.latitud IS NOT NULL AND g.longitud IS NOT NULL
+      AND g.latitud!=0 AND g.longitud!=0
+  ");
+} catch(Throwable $e) { $gestiones_hoy = []; }
+?>
+
+<!-- Widget: Mapa de gestiones atendidas -->
+<div class="col-12 col-lg-6">
+  <div class="card shadow-sm h-100">
+    <div class="card-body">
+      <h2 class="h6 mb-3">🗺️ Mapa de gestiones atendidas (hoy)</h2>
+      <div id="mapGestiones" style="height:300px;border-radius:10px;"></div>
+      <?php if (empty($gestiones_hoy)): ?>
+        <p class="text-muted small mt-2 mb-0 text-center">No hay gestiones con ubicación registrada hoy.</p>
+      <?php endif; ?>
+    </div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+
+<script>
+document.addEventListener("DOMContentLoaded", () => {
+  const map = L.map("mapGestiones").setView([21.122, -101.68], 12);
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    attribution: "© OpenStreetMap"
+  }).addTo(map);
+
+  const puntos = <?= json_encode($gestiones_hoy, JSON_UNESCAPED_UNICODE) ?>;
+  if (!puntos.length) return;
+
+  const bounds = [];
+  puntos.forEach(p => {
+    const lat = parseFloat(p.latitud);
+    const lng = parseFloat(p.longitud);
+    if (!lat || !lng) return;
+
+    const marker = L.marker([lat, lng]).addTo(map);
+    marker.bindPopup(
+      `<strong>${p.titular || 'Sin titular'}</strong><br>` +
+      `${p.cobrador || 'Sin cobrador'}<br>` +
+      `<a href="https://maps.google.com/?q=${lat},${lng}" target="_blank">Abrir en Google Maps</a>`
+    );
+    bounds.push([lat, lng]);
+  });
+
+  if (bounds.length) map.fitBounds(bounds, { padding: [30, 30] });
+});
+</script>
+
+
+
+
+
+    
+  </div>
+
+
+
+
+
+  <!-- Últimos abonos y comisiones -->
+  <div class="row g-3 mt-4">
     <div class="col-12 col-xl-6">
       <div class="card shadow-sm h-100">
         <div class="card-body">
           <h2 class="h6 mb-3">Últimos abonos</h2>
           <div class="table-responsive">
             <table class="table table-sm align-middle">
-              <thead><tr>
-                <th>#</th><th>Contrato</th><th>Titular</th><th class="text-end">Monto</th><th>Fecha</th><th></th>
-              </tr></thead>
+              <thead><tr><th>#</th><th>Contrato</th><th>Titular</th><th class="text-end">Monto</th><th>Fecha</th><th></th></tr></thead>
               <tbody>
-                <?php if(!$abonos): ?>
-                  <tr><td colspan="6" class="text-muted">Sin abonos recientes.</td></tr>
-                <?php else: foreach($abonos as $a): ?>
-                  <tr>
-                    <td><?= (int)$a['id_abono'] ?></td>
-                    <td>#<?= (int)$a['id_contrato'] ?></td>
-                    <td><?= e($a['titular'] ?? '') ?></td>
-                    <td class="text-end">$<?= number_format((float)$a['cant_abono'],2) ?></td>
-                    <td><?= e($a['fecha']) ?></td>
-                    <td><a class="btn btn-sm btn-outline-primary" href="?r=pagos.nuevo_abono&id_contrato=<?= (int)$a['id_contrato'] ?>">Ver</a></td>
-                  </tr>
-                <?php endforeach; endif; ?>
+              <?php if(!$abonos): ?>
+                <tr><td colspan="6" class="text-muted">Sin abonos recientes.</td></tr>
+              <?php else: foreach($abonos as $a):
+                $geo=qone("SELECT latitud,longitud FROM futuro_gestion WHERE id_contrato=? ORDER BY id_gestion DESC LIMIT 1",[$a['id_contrato']]);
+                $linkMap=($geo&&$geo['latitud'])?"https://maps.google.com/?q={$geo['latitud']},{$geo['longitud']}":null;
+              ?>
+                <tr>
+                  <td><?= (int)$a['id_abono'] ?></td>
+                  <td>#<?= (int)$a['id_contrato'] ?></td>
+                  <td><?= e($a['titular'] ?? '') ?></td>
+                  <td class="text-end">$<?= number_format((float)$a['cant_abono'],2) ?></td>
+                  <td><?= e($a['fecha']) ?></td>
+                  <td>
+                    <a class="btn btn-sm btn-outline-primary" href="?r=pagos.nuevo_abono&id_contrato=<?= (int)$a['id_contrato'] ?>">Ver</a>
+                    <?php if($linkMap): ?><a href="<?= $linkMap ?>" target="_blank" class="btn btn-sm btn-outline-success" title="Ver ubicación">📍</a><?php endif; ?>
+                  </td>
+                </tr>
+              <?php endforeach; endif; ?>
               </tbody>
             </table>
           </div>
@@ -201,28 +337,25 @@ ob_start(); ?>
         </div>
       </div>
     </div>
+
     <div class="col-12 col-xl-6">
       <div class="card shadow-sm h-100">
         <div class="card-body">
           <h2 class="h6 mb-3">Comisiones recientes</h2>
           <div class="table-responsive">
             <table class="table table-sm align-middle">
-              <thead><tr>
-                <th>#</th><th>Contrato</th><th class="text-end">Monto</th><th>Estatus</th><th>Fecha</th><th></th>
-              </tr></thead>
+              <thead><tr><th>#</th><th>Contrato</th><th class="text-end">Monto</th><th>Estatus</th><th>Fecha</th><th></th></tr></thead>
               <tbody>
                 <?php if(!$comisiones): ?>
                   <tr><td colspan="6" class="text-muted">Sin registros de comisión.</td></tr>
-                <?php else: foreach($comisiones as $c): ?>
+                <?php else: foreach($comisiones as $c): 
+                  $st=strtolower($c['estatus']??'');
+                  $badge=($st==='pagada')?'success':(($st==='pendiente'||$st==='por pagar'||$st==='por_pagar')?'warning':'secondary'); ?>
                   <tr>
                     <td><?= (int)$c['id_bono_sem'] ?></td>
                     <td>#<?= (int)$c['id_contrato'] ?></td>
                     <td class="text-end">$<?= number_format((float)$c['monto'],2) ?></td>
-                    <td>
-                      <?php $st = strtolower($c['estatus'] ?? ''); 
-                            $badge = ($st==='pagada') ? 'success' : (($st==='pendiente'||$st==='por pagar'||$st==='por_pagar') ? 'warning' : 'secondary'); ?>
-                      <span class="badge bg-<?= $badge ?>"><?= e($c['estatus'] ?? '-') ?></span>
-                    </td>
+                    <td><span class="badge bg-<?= $badge ?>"><?= e($c['estatus'] ?? '-') ?></span></td>
                     <td><?= e($c['fecha']) ?></td>
                     <td><a class="btn btn-sm btn-outline-secondary" href="?r=pagos.comisiones&id_contrato=<?= (int)$c['id_contrato'] ?>">Capturar/Ver</a></td>
                   </tr>
@@ -235,67 +368,7 @@ ob_start(); ?>
       </div>
     </div>
   </div>
-
-  <!-- Atajos de operación -->
-  <div class="row g-3 mt-1">
-    <div class="col-12 col-md-6 col-lg-3">
-      <div class="card shadow-sm h-100">
-        <div class="card-body d-grid">
-          <h2 class="h6">Servicios</h2>
-          <a class="btn btn-primary" href="?r=servicios.listar">Abrir servicios</a>
-          <a class="btn btn-outline-secondary mt-2" href="?r=fallecidos.listar">Fallecidos</a>
-        </div>
-      </div>
-    </div>
-    <div class="col-12 col-md-6 col-lg-3">
-      <div class="card shadow-sm h-100">
-        <div class="card-body d-grid">
-          <h2 class="h6">Inventario</h2>
-          <a class="btn btn-outline-primary" href="?r=articulos.listar">Artículos</a>
-          <a class="btn btn-outline-secondary mt-2" href="?r=cajas.listar">Cajas/Ataúdes</a>
-          <a class="btn btn-outline-secondary mt-2" href="?r=equipos.listar">Equipos</a>
-        </div>
-      </div>
-    </div>
-    <div class="col-12 col-md-6 col-lg-3">
-      <div class="card shadow-sm h-100">
-        <div class="card-body d-grid">
-          <h2 class="h6">Pagos</h2>
-          <a class="btn btn-outline-primary" href="?r=pagos.contratos">Contratos</a>
-          <a class="btn btn-outline-secondary mt-2" href="?r=pagos.corte&tipo=cobrador">Corte cobrador</a>
-          <a class="btn btn-outline-secondary mt-2" href="?r=pagos.corte&tipo=vendedor">Corte vendedor</a>
-        </div>
-      </div>
-    </div>
-    <div class="col-12 col-md-6 col-lg-3">
-      <div class="card shadow-sm h-100">
-        <div class="card-body d-grid">
-          <h2 class="h6">Proveedores</h2>
-          <a class="btn btn-outline-primary" href="?r=proveedores.listar">Gestionar proveedores</a>
-        </div>
-      </div>
-    </div>
-  </div>
 </div>
-
-<script>
-  (function(){
-    const sel = document.getElementById('personaSelect');
-    const btnCob = document.getElementById('btnCorteCobrador');
-    const btnVen = document.getElementById('btnCorteVendedor');
-    function updateLinks(){
-      const v = sel ? sel.value : '';
-      const dis = !v;
-      [btnCob,btnVen].forEach(b=>{
-        if(!b) return;
-        b.classList.toggle('disabled', dis);
-        b.setAttribute('aria-disabled', dis?'true':'false');
-        b.href = dis ? '#' : (b.id==='btnCorteCobrador' ? ('?r=pagos.corte&tipo=cobrador&id_personal='+v) : ('?r=pagos.corte&tipo=vendedor&id_personal='+v));
-      });
-    }
-    if(sel){ sel.addEventListener('change', updateLinks); updateLinks(); }
-  })();
-</script>
 
 <?php
 // Render con layout base

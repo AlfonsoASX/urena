@@ -1,7 +1,15 @@
 <?php
-
 require __DIR__ . '/core/bootstrap.php';
 
+if(!empty($_SESSION['user']['perfil']))
+{
+  $perfil = $_SESSION['user']['perfil'];
+}
+else
+{
+  $perfil='';
+
+}
 $route = $_GET['r'] ?? 'home.index';
 list($module,$action) = explode('.', $route) + [null,null];
 
@@ -16,13 +24,24 @@ $allowed = [
   'servicios'   => ['listar','nuevo','guardar','ver','asignar_caja','asignar_equipo','cerrar','borrar'],
   'equipos'     => ['listar','nuevo','guardar','editar','actualizar','asignar','guardar_asignacion','retornar','guardar_retorno','baja'],
   'proveedores' => ['listar','nuevo','guardar','editar','actualizar','baja','activar','inactivar'],
-  'pagos'       => ['contratos','nuevo_abono','guardar_abono','corte','comisiones','guardar_comision'],
+  'pagos'       => ['contratos','nuevo_abono','guardar_abono','corte','comisiones','guardar_comision', 'editar_contrato', 'borrar_abono'],
+  'cobrador'    => ['panel','contratos','pago','ticket', 'gestion'],
+  'contratos'   => ['listar','nuevo','guardar','editar','actualizar','ver'],
+  'rutas'   => ['contratos', 'cobradores', 'asignar', 'asignar_masivo', ''],
+
+
   // aquí puedes agregar después más módulos como usuarios, rentas, etc.
 ];
 
 
 if (!isset($allowed[$module]) || !in_array($action, $allowed[$module])) {
   $module='home'; $action='index';
+}
+
+//echo $perfil;
+if ($perfil === 'cobrador' && $module !== 'cobrador' && $module !== 'auth') {
+  header('Location: index.php?r=cobrador.panel');
+  exit;
 }
 
 require __DIR__ . "/modules/$module.php";

