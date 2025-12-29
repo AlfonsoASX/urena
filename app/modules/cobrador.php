@@ -22,11 +22,33 @@ function cobrador_personal_id(): int {
   return (int)($r['id_personal'] ?? 0);
 }
 
+function cobrador_saldo_contrato(PDO $pdo, int $id_contrato, float $monto_nuevo = 0.0, bool $lock = false): array {
+  $sqlContrato = "SELECT id_contrato, costo_final FROM futuro_contratos WHERE id_contrato=?".($lock ? " FOR UPDATE" : "");
+  $stmt = $pdo->prepare($sqlContrato);
+  $stmt->execute([$id_contrato]);
+  $c = $stmt->fetch(PDO::FETCH_ASSOC);
+  if (!$c) {
+    throw new RuntimeException('Contrato no encontrado.');
+  }
+
+  $sqlSum = "SELECT COALESCE(SUM(cant_abono),0) AS pagado FROM futuro_abonos WHERE id_contrato=?".($lock ? " FOR UPDATE" : "");
+  $stmt2 = $pdo->prepare($sqlSum);
+  $stmt2->execute([$id_contrato]);
+  $s = $stmt2->fetch(PDO::FETCH_ASSOC);
+
+  $costo = (float)$c['costo_final'];
+  $pagado = (float)($s['pagado'] ?? 0);
+  $saldo = $costo - ($pagado + (float)$monto_nuevo);
+  if ($saldo < 0) $saldo = 0;
+
+  return ['costo_final' => $costo, 'pagado' => $pagado, 'saldo' => $saldo];
+}
+
 /**
  * Obtiene la lista de contratos con filtros de búsqueda y ordenamiento
  */
 function cobrador_contratos(int $id_personal, bool $soloAsignados = true, string $busqueda = '', string $orden = 'prioridad'): array {
-  
+
   // Lista blanca de ordenamientos permitidos para evitar inyección SQL
   $orderBySQL = match($orden) {
     'id'      => 'c.id_contrato DESC',
@@ -72,10 +94,26 @@ function cobrador_contratos(int $id_personal, bool $soloAsignados = true, string
         WHERE g.id_contrato = c.id_contrato 
         ORDER BY g.fecha_registro DESC 
         LIMIT 1
-      ) AS fecha_proxima_visita
+      ) AS fecha_proxima_visita,
+
+      -- Suma de pagos y saldo actual
+      COALESCE((
+        SELECT SUM(a.cant_abono)
+        FROM futuro_abonos a
+        WHERE a.id_contrato = c.id_contrato
+      ),0) AS total_pagado,
+
+      GREATEST(
+        c.costo_final - COALESCE((
+          SELECT SUM(a2.cant_abono)
+          FROM futuro_abonos a2
+          WHERE a2.id_contrato = c.id_contrato
+        ),0),
+        0
+      ) AS saldo_actual
 
     FROM futuro_contratos c
-    " . ($soloAsignados ? "INNER JOIN futuro_contrato_cobrador fc ON fc.id_contrato = c.id_contrato" : "") . "
+    ". ($soloAsignados ? "INNER JOIN futuro_contrato_cobrador fc ON fc.id_contrato = c.id_contrato" : "") ."
     LEFT JOIN vw_titular_contrato t ON t.id_contrato = c.id_contrato
     LEFT JOIN titular_contrato tc ON tc.id_contrato = c.id_contrato
     LEFT JOIN titular_dom td ON td.id_titular = tc.id_titular
@@ -91,12 +129,13 @@ function cobrador_contratos(int $id_personal, bool $soloAsignados = true, string
     $params[] = $id_personal;
   }
 
-  // 2. Filtro de búsqueda (ID o Nombre del Titular)
+  // 2. Filtro de búsqueda (ID, Nombre del Titular o Dirección)
   if (!empty($busqueda)) {
-    $sql .= " AND (c.id_contrato LIKE ? OR t.titular LIKE ?)";
+    $sql .= " AND (c.id_contrato LIKE ? OR t.titular LIKE ? OR TRIM(CONCAT(IFNULL(d.calle,''),' ',IFNULL(CONCAT('#', d.num_ext),''),', ',IFNULL(d.colonia,''),', ',IFNULL(d.municipio,''))) LIKE ?)";
     $term = "%$busqueda%";
-    $params[] = $term; // Para id_contrato
-    $params[] = $term; // Para titular
+    $params[] = $term; // id_contrato
+    $params[] = $term; // titular
+    $params[] = $term; // direccion
   }
 
   // 3. Agrupación y Ordenamiento
@@ -113,10 +152,13 @@ function cobrador_registrar_gestion(int $id_contrato, ?float $monto, int $id_per
     $id_abono = null;
     // Si hay monto, registramos el abono financiero
     if ($monto && $monto > 0) {
+
+      $calc = cobrador_saldo_contrato($pdo, $id_contrato, (float)$monto, true);
+
       q("INSERT INTO futuro_abonos (id_contrato, saldo, cant_abono, fecha_registro)
-         VALUES (?,?,?,CURRENT_TIMESTAMP())", [$id_contrato, 0, $monto]);
+         VALUES (?,?,?,CURRENT_TIMESTAMP())", [$id_contrato, (float)$calc['saldo'], (float)$monto]);
       $id_abono = $pdo->lastInsertId();
-      
+
       // Relacionar abono con cobrador
       q("INSERT INTO futuro_abono_cobrador (id_abono, id_personal, fecha_registro)
          VALUES (?,?,CURRENT_TIMESTAMP())", [$id_abono, $id_personal]);
@@ -184,28 +226,28 @@ case 'panel':
 case 'contratos':
   $id_personal = cobrador_personal_id();
   $filtro = ($_GET['filtro'] ?? '') === 'todos' ? false : true; // True = Solo asignados
-  
+
   // Capturar parámetros de búsqueda y orden
   $busqueda = trim($_GET['q'] ?? '');
   $orden    = $_GET['sort'] ?? 'prioridad';
-  
+
   $rows = cobrador_contratos($id_personal, $filtro, $busqueda, $orden);
 
   ob_start(); ?>
-  
+
   <div class="row mb-3 align-items-center g-2">
     <div class="col-md-4">
       <h1 class="h4 m-0"><?= $filtro ? 'Mis contratos' : 'Todos los contratos' ?></h1>
     </div>
-    
+
     <div class="col-md-5">
       <form action="" method="get" class="d-flex">
         <input type="hidden" name="r" value="cobrador.contratos">
         <?php if(!$filtro): ?><input type="hidden" name="filtro" value="todos"><?php endif; ?>
         <input type="hidden" name="sort" value="<?= e($orden) ?>">
-        
+
         <div class="input-group">
-          <input type="text" name="q" class="form-control form-control-sm" placeholder="Buscar titular o ID..." value="<?= e($busqueda) ?>">
+          <input type="text" name="q" class="form-control form-control-sm" placeholder="Buscar titular, ID o dirección..." value="<?= e($busqueda) ?>">
           <button class="btn btn-primary btn-sm" type="submit">🔍</button>
           <?php if($busqueda): ?>
              <a href="?r=cobrador.contratos<?= $filtro ? '' : '&filtro=todos' ?>" class="btn btn-outline-secondary btn-sm" title="Limpiar búsqueda">×</a>
@@ -230,7 +272,7 @@ case 'contratos':
       $url = "?r=cobrador.contratos&sort=$col";
       if (!$filtro) $url .= "&filtro=todos";
       if ($busqueda) $url .= "&q=" . urlencode($busqueda);
-      
+
       $class = $active ? 'text-dark fw-bold text-decoration-none' : 'text-muted text-decoration-none';
       return "<a href='$url' class='$class'>$label$icon</a>";
   };
@@ -244,6 +286,7 @@ case 'contratos':
           <th><?= $sortLink('titular', 'Titular') ?></th>
           <th>Dirección</th>
           <th><?= $sortLink('monto', 'Costo') ?></th>
+          <th>Saldo</th>
           <th><?= $sortLink('estatus', 'Estatus') ?></th>
           <th><?= $sortLink('prioridad', '📅 Prox. Visita') ?></th>
           <th>🕒 Ult. Gestión</th>
@@ -254,11 +297,9 @@ case 'contratos':
       <tbody>
       <?php foreach ($rows as $r): 
         $direccion = trim($r['direccion'] ?? '');
-        // Limpiar comas duplicadas en dirección si faltan datos
         $direccion = trim($direccion, ', ');
         $link_maps = $direccion ? 'https://www.google.com/maps/search/?api=1&query=' . urlencode($direccion . ', León, Guanajuato') : null;
 
-        // Lógica de semáforo para fechas
         $fecha = $r['fecha_proxima_visita'];
         $clase = 'text-muted';
         $texto = '—';
@@ -286,16 +327,17 @@ case 'contratos':
                 </small>
              </div>
           </td>
-          <td><small>$<?= number_format($r['costo_final'], 2) ?></small></td>
+          <td><small>$<?= number_format((float)$r['costo_final'], 2) ?></small></td>
+          <td><small class="text-danger">$<?= number_format((float)($r['saldo_actual'] ?? 0), 2) ?></small></td>
           <td>
-            <span class="badge bg-<?= $r['estatus'] === 'activo' ? 'success' : 'secondary' ?>">
-                <?= substr(e($r['estatus']), 0, 3) ?>
+            <span class="badge bg-<?= ($r['estatus'] ?? '') === 'activo' ? 'success' : 'secondary' ?>">
+                <?= substr(e($r['estatus'] ?? ''), 0, 3) ?>
             </span>
           </td>
           <td class="<?= $clase ?>"><small><?= $texto ?></small></td>
           <td><small class="text-muted"><?= $r['fecha_ultima_gestion'] ? date('d/m', strtotime($r['fecha_ultima_gestion'])) : '—' ?></small></td>
           <td>
-            <small class="d-block text-truncate text-muted" style="max-width: 120px;" title="<?= e($r['ultima_nota']) ?>">
+            <small class="d-block text-truncate text-muted" style="max-width: 120px;" title="<?= e($r['ultima_nota'] ?? '') ?>">
                 <?= e($r['ultima_nota'] ?? '—') ?>
             </small>
           </td>
@@ -309,7 +351,7 @@ case 'contratos':
           </td>
         </tr>
       <?php endforeach; ?>
-      
+
       <?php if (empty($rows)): ?>
         <tr>
             <td colspan="9" class="text-center py-4 text-muted">
@@ -337,10 +379,10 @@ case 'gestion':
         redirect('cobrador.gestion&id_contrato='.$id_contrato); 
     }
 
-    $monto = trim($_POST['monto']) !== '' ? (float)$_POST['monto'] : null;
+    $monto = trim($_POST['monto'] ?? '') !== '' ? (float)$_POST['monto'] : null;
     $lat = (float)($_POST['latitud'] ?? 0);
     $lng = (float)($_POST['longitud'] ?? 0);
-    $fecha_proxima = $_POST['fecha_proxima_visita'] ?: null;
+    $fecha_proxima = ($_POST['fecha_proxima_visita'] ?? '') ?: null;
     $notas = $_POST['notas'] ?? '';
     $id_personal = cobrador_personal_id();
 
@@ -352,7 +394,7 @@ case 'gestion':
       $t = qone("SELECT titular FROM vw_titular_contrato WHERE id_contrato=?", [$id_contrato]);
       render('Ticket de visita', (function() use($t,$id_contrato,$fecha_proxima){
           ob_start();
-          cobrador_ticket_visita($t['titular'],$id_contrato,$fecha_proxima);
+          cobrador_ticket_visita($t['titular'] ?? '—',$id_contrato,$fecha_proxima);
           return ob_get_clean();
       })());
       exit;
@@ -367,10 +409,10 @@ case 'gestion':
           <h1 class="h5 m-0">Gestión Contrato #<?= e($id_contrato) ?></h1>
           <a href="?r=cobrador.contratos" class="btn btn-sm btn-outline-secondary">Volver</a>
       </div>
-      
+
       <form method="post" action="?r=cobrador.gestion&id_contrato=<?= urlencode($id_contrato) ?>" id="formGestion">
         <?= csrf_field() ?>
-        
+
         <div class="mb-3">
             <label class="form-label">Monto abonado ($)</label>
             <input type="number" step="0.01" name="monto" class="form-control form-control-lg" placeholder="0.00 (Dejar vacío si solo es visita)">
@@ -408,15 +450,30 @@ case 'gestion':
 
 case 'ticket':
   $id_abono = (int)($_GET['id_abono'] ?? 0);
-  
-  // 1. Consulta completa (igual a la de imprimirL.php) para tener los mismos datos
+  if ($id_abono <= 0) {
+    flash("<div class='alert alert-warning'>Ticket inválido.</div>");
+    redirect('cobrador.contratos');
+  }
+
   $sql = "
     SELECT 
-        a.id_abono, a.fecha_registro, a.cant_abono, a.saldo,
+        a.id_abono, a.fecha_registro, a.cant_abono,
         c.id_contrato, c.estatus, c.tipo_contrato, c.costo_final, c.tipo_pago,
         t.titular,
-        -- Obtenemos el nombre del cobrador que registró el abono, o el usuario actual si falla
-        COALESCE(CONCAT(p.nombre, ' ', p.apellido_p), ?) AS nombre_cobrador
+        COALESCE(CONCAT(p.nombre, ' ', p.apellido_p), ?) AS nombre_cobrador,
+        COALESCE((
+          SELECT SUM(a2.cant_abono)
+          FROM futuro_abonos a2
+          WHERE a2.id_contrato = c.id_contrato
+        ),0) AS total_pagado,
+        GREATEST(
+          c.costo_final - COALESCE((
+            SELECT SUM(a3.cant_abono)
+            FROM futuro_abonos a3
+            WHERE a3.id_contrato = c.id_contrato
+          ),0),
+          0
+        ) AS saldo_actual
     FROM futuro_abonos a
     INNER JOIN futuro_contratos c ON c.id_contrato = a.id_contrato
     LEFT JOIN vw_titular_contrato t ON t.id_contrato = c.id_contrato
@@ -426,17 +483,16 @@ case 'ticket':
     LIMIT 1
   ";
 
-  // Pasamos el nombre del usuario actual como fallback por si no hay cobrador enlazado
   $nombre_actual = current_user()['nombre'] ?? 'Oficina';
   $data = qone($sql, [$nombre_actual, $id_abono]);
-  
+
   if (!$data) { 
       flash("<div class='alert alert-warning'>Ticket no encontrado.</div>"); 
       redirect('cobrador.contratos'); 
   }
-  
+
   ob_start(); ?>
-  
+
   <style>
     @media print {
       .no-print, .navbar, .footer, .btn { display: none !important; }
@@ -453,7 +509,7 @@ case 'ticket':
     <div class="col-md-6 col-lg-4">
       <div class="card shadow-sm">
         <div class="card-body">
-          
+
           <div class="text-center mb-4">
             <h4 class="mb-1">GRUPO UREÑA FUNERARIOS</h4>
             <small class="text-muted">Independencia No. 708, Col. San Miguel</small><br>
@@ -463,7 +519,7 @@ case 'ticket':
 
           <div class="ticket-row">
             <span class="ticket-label">Folio Abono:</span>
-            <span class="ticket-value"><?= str_pad($data['id_abono'], 6, "0", STR_PAD_LEFT) ?></span>
+            <span class="ticket-value"><?= str_pad((string)$data['id_abono'], 6, "0", STR_PAD_LEFT) ?></span>
           </div>
           <div class="ticket-row">
             <span class="ticket-label">Fecha:</span>
@@ -475,30 +531,30 @@ case 'ticket':
           </div>
           <div class="ticket-row">
             <span class="ticket-label">Titular:</span>
-            <span class="ticket-value text-break" style="max-width: 60%;"><?= e($data['titular']) ?></span>
+            <span class="ticket-value text-break" style="max-width: 60%;"><?= e($data['titular'] ?? '—') ?></span>
           </div>
           <div class="ticket-row">
             <span class="ticket-label">Tipo:</span>
-            <span class="ticket-value"><?= e($data['tipo_contrato']) ?></span>
+            <span class="ticket-value"><?= e($data['tipo_contrato'] ?? '—') ?></span>
           </div>
           <div class="ticket-row">
             <span class="ticket-label">Costo Final:</span>
-            <span class="ticket-value">$<?= number_format($data['costo_final'], 2) ?></span>
+            <span class="ticket-value">$<?= number_format((float)$data['costo_final'], 2) ?></span>
           </div>
-          
+
           <div class="ticket-row mt-3" style="border-top: 2px solid #000; border-bottom: none;">
             <span class="ticket-label fs-5">SU PAGO:</span>
-            <span class="ticket-value fs-5">$<?= number_format($data['cant_abono'], 2) ?></span>
+            <span class="ticket-value fs-5">$<?= number_format((float)$data['cant_abono'], 2) ?></span>
           </div>
 
           <div class="ticket-row">
             <span class="ticket-label">Saldo Restante:</span>
-            <span class="ticket-value text-danger">$<?= number_format($data['saldo'], 2) ?></span>
+            <span class="ticket-value text-danger">$<?= number_format((float)$data['saldo_actual'], 2) ?></span>
           </div>
-          
+
           <div class="mt-4 text-center">
             <p class="mb-1"><small>Cobrador:</small></p>
-            <p><strong><?= e($data['nombre_cobrador']) ?></strong></p>
+            <p><strong><?= e($data['nombre_cobrador'] ?? 'Oficina') ?></strong></p>
             <hr>
             <p class="small text-muted">Gracias por su confianza.<br>Fue un placer atenderle.</p>
           </div>
@@ -508,22 +564,14 @@ case 'ticket':
 
       <div id="botones" class="d-flex flex-column gap-2 mt-4 no-print">
           <?php 
-          // Construcción de URLs
-          // Asegúrate de que $_SERVER['HTTP_HOST'] sea correcto o usa tu dominio fijo 'urena.control.mx'
           $domain = $_SERVER['HTTP_HOST'] ?? 'urena.control.mx';
           $protocol = isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? "https" : "http";
           $baseUrl = "$protocol://$domain"; 
-          
-          // URL para JSON (App Móvil)
-          $url_json = $baseUrl . '/app/modules/imprimirM.php?id_abono=' . $data['id_abono'];
+
+          $url_json = $baseUrl . '/app/modules/imprimirM.php?id_abono=' . (int)$data['id_abono'];
           $url_app = 'my.bluetoothprint.scheme://' . $url_json;
-          
-          // URL para PDF
-          $url_pdf = '?r=modules/imprimirL&id_abono=' . $data['id_abono']; 
-          // Nota: Si imprimirL está en modules, la ruta correcta en tu router parece ser directa al archivo
-          // pero si usas el router index.php, sería mejor una ruta limpia. 
-          // Usaremos acceso directo al archivo para el botón PDF externo:
-          $link_pdf_directo = "modules/imprimirL.php?id_abono=" . $data['id_abono'];
+
+          $link_pdf_directo = "modules/imprimirL.php?id_abono=" . (int)$data['id_abono'];
           ?>
 
           <a href="<?= $url_app ?>" class="btn btn-dark btn-lg w-100">
@@ -533,7 +581,7 @@ case 'ticket':
           <a href="<?= $link_pdf_directo ?>" target="_blank" class="btn btn-outline-secondary w-100">
              📄 Ver PDF 
           </a>
-          
+
           <button onclick="window.print();" class="btn btn-link w-100">
              🖨️ Imprimir en navegador
           </button>
