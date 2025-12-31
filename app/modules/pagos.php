@@ -269,6 +269,7 @@ case 'nuevo_abono':
              onclick="return confirm('¿Seguro que deseas eliminar este abono?')">
             Eliminar
           </a>
+          <a class="btn btn-sm btn-outline-info" href="?r=cobrador.ticket&id_abono=<?= (int)$h['id_abono'] ?>">Imprimir ticket</a>
         </td>
       </tr>
       <?php endforeach; ?>
