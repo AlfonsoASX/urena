@@ -671,7 +671,7 @@ case 'ticket':
           $protocol = isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? "https" : "http";
           $baseUrl = "$protocol://$domain"; 
 
-          $url_json = $baseUrl . '/app/modules/imprimirM.php?id_abono=' . (int)$data['id_abono'];
+          $url_json = $baseUrl . '/modules/imprimirM.php?id_abono=' . (int)$data['id_abono'];
           $url_app = 'my.bluetoothprint.scheme://' . $url_json;
 
           $link_pdf_directo = "modules/imprimirL.php?id_abono=" . (int)$data['id_abono'];
