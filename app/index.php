@@ -25,7 +25,7 @@ $allowed = [
   'equipos'     => ['listar','nuevo','guardar','editar','actualizar','asignar','guardar_asignacion','retornar','guardar_retorno','baja'],
   'proveedores' => ['listar','nuevo','guardar','editar','actualizar','baja','activar','inactivar'],
   'pagos'       => ['contratos','nuevo_abono','guardar_abono','corte','comisiones','guardar_comision', 'editar_contrato', 'borrar_abono'],
-  'cobrador'    => ['panel','contratos','pago','pagos','ticket', 'gestion'],
+  'cobrador'    => ['panel','contratos','pago','pagos','estado','ticket', 'gestion'],
   'contratos'   => ['listar','nuevo','guardar','editar','actualizar','ver'],
   'rutas'   => ['contratos', 'cobradores', 'asignar', 'asignar_masivo', ''],
 

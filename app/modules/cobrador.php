@@ -349,6 +349,9 @@ case 'contratos':
               <a href="?r=cobrador.pagos&id_contrato=<?= $r['id_contrato'] ?>" class="btn btn-outline-dark" title="Ver pagos">
                 🧾 <span class="ms-1">Pagos</span>
               </a>
+              <a href="?r=cobrador.estado&id_contrato=<?= $r['id_contrato'] ?>" class="btn btn-outline-secondary" title="Ver estado de cuenta">
+                📑 <span class="ms-1">Estado</span>
+              </a>
               <?php if ($link_maps): ?>
                 <a href="<?= $link_maps ?>" target="_blank" class="btn btn-outline-primary" title="Ver en mapa">
                   🗺️ <span class="ms-1">Mapa</span>
@@ -549,6 +552,165 @@ case 'pagos':
     </div>
   </div>
   <?php render('Pagos del contrato', ob_get_clean());
+  break;
+
+case 'estado':
+  $id_contrato = (int)($_GET['id_contrato'] ?? 0);
+  if ($id_contrato <= 0) {
+    flash("<div class='alert alert-warning'>Contrato inválido.</div>");
+    redirect('cobrador.contratos');
+  }
+
+  $c = qone("SELECT c.id_contrato, c.costo_final, c.estatus, t.titular,
+                    TRIM(CONCAT(
+                      IFNULL(d.calle, ''), ' ',
+                      IFNULL(CONCAT('#', d.num_ext), ''), ', ',
+                      IFNULL(d.colonia, ''), ', ',
+                      IFNULL(d.municipio, '')
+                    )) AS direccion
+             FROM futuro_contratos c
+             LEFT JOIN vw_titular_contrato t ON t.id_contrato=c.id_contrato
+             LEFT JOIN titular_contrato tc ON tc.id_contrato = c.id_contrato
+             LEFT JOIN titular_dom td ON td.id_titular = tc.id_titular
+             LEFT JOIN domicilios d ON d.id_domicilio = td.id_domicilio
+             WHERE c.id_contrato=? LIMIT 1", [$id_contrato]);
+
+  if (!$c) {
+    flash("<div class='alert alert-warning'>Contrato no encontrado.</div>");
+    redirect('cobrador.contratos');
+  }
+
+  $sum = qone("SELECT COALESCE(SUM(cant_abono),0) AS total_pagado FROM futuro_abonos WHERE id_contrato=?", [$id_contrato]);
+  $total_pagado = (float)($sum['total_pagado'] ?? 0);
+  $costo_final = (float)($c['costo_final'] ?? 0);
+  $saldo_calc = $costo_final - $total_pagado;
+  if ($saldo_calc < 0) $saldo_calc = 0;
+
+  $movs = qall("
+    (SELECT
+        'abono' AS tipo,
+        a.fecha_registro AS fecha,
+        a.id_abono AS folio,
+        a.cant_abono AS monto,
+        a.saldo AS saldo,
+        NULL AS notas,
+        COALESCE(CONCAT(p.nombre, ' ', p.apellido_p), '') AS responsable
+     FROM futuro_abonos a
+     LEFT JOIN futuro_abono_cobrador fac ON fac.id_abono = a.id_abono
+     LEFT JOIN futuro_personal p ON p.id_personal = fac.id_personal
+     WHERE a.id_contrato = ?
+    )
+    UNION ALL
+    (SELECT
+        'gestion' AS tipo,
+        g.fecha_registro AS fecha,
+        g.id_gestion AS folio,
+        COALESCE(g.cant_abono, 0) AS monto,
+        NULL AS saldo,
+        g.notas AS notas,
+        COALESCE(CONCAT(p2.nombre, ' ', p2.apellido_p), '') AS responsable
+     FROM futuro_gestion g
+     LEFT JOIN futuro_personal p2 ON p2.id_personal = g.id_personal
+     WHERE g.id_contrato = ?
+    )
+    ORDER BY fecha DESC, folio DESC
+  ", [$id_contrato, $id_contrato]);
+
+  $print = ($_GET['print'] ?? '') === '1';
+
+  ob_start(); ?>
+
+  <style>
+    @media print {
+      .no-print, .navbar, .footer, .btn { display: none !important; }
+      body { background-color: white; padding-top: 0; }
+      .card { border: none !important; box-shadow: none !important; }
+      .container { max-width: 100% !important; margin: 0; padding: 0; }
+    }
+  </style>
+
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <div>
+      <h1 class="h4 m-0">Estado de cuenta — Contrato #<?= e($id_contrato) ?></h1>
+      <div class="text-muted small">
+        <div><strong>Titular:</strong> <?= e($c['titular'] ?? '—') ?></div>
+        <div><strong>Dirección:</strong> <?= e(trim((string)($c['direccion'] ?? '')) ?: '—') ?></div>
+        <div class="mt-1">
+          <span class="me-2"><strong>Costo:</strong> $<?= number_format($costo_final, 2) ?></span>
+          <span class="me-2"><strong>Pagado:</strong> $<?= number_format($total_pagado, 2) ?></span>
+          <span><strong>Saldo:</strong> <span class="text-danger fw-semibold">$<?= number_format($saldo_calc, 2) ?></span></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="no-print d-flex gap-2">
+      <a href="?r=cobrador.contratos" class="btn btn-sm btn-outline-secondary">← Volver</a>
+      <a href="?r=cobrador.estado&id_contrato=<?= (int)$id_contrato ?>&print=1" target="_blank" class="btn btn-sm btn-outline-secondary">📄 PDF</a>
+      <button onclick="window.print();" class="btn btn-sm btn-primary">🖨️ Imprimir</button>
+    </div>
+  </div>
+
+  <div class="card shadow-sm">
+    <div class="card-body">
+      <div class="table-responsive">
+        <table class="table table-sm table-striped align-middle">
+          <thead class="table-light">
+            <tr>
+              <th>Fecha</th>
+              <th>Tipo</th>
+              <th>Folio</th>
+              <th class="text-end">Monto</th>
+              <th class="text-end">Saldo</th>
+              <th>Notas</th>
+              <th>Responsable</th>
+              <th class="no-print" style="width:170px">Acciones</th>
+            </tr>
+          </thead>
+          <tbody>
+          <?php foreach ($movs as $m): 
+            $tipo = $m['tipo'] ?? '';
+            $is_abono = $tipo === 'abono';
+          ?>
+            <tr>
+              <td><small><?= $m['fecha'] ? date('d/m/Y H:i', strtotime($m['fecha'])) : '—' ?></small></td>
+              <td><small><?= $is_abono ? 'Pago' : 'Gestión' ?></small></td>
+              <td><small class="font-monospace">#<?= str_pad((string)($m['folio'] ?? ''), 6, '0', STR_PAD_LEFT) ?></small></td>
+              <td class="text-end"><small>$<?= number_format((float)($m['monto'] ?? 0), 2) ?></small></td>
+              <td class="text-end">
+                <small class="text-danger"><?= $is_abono ? '$'.number_format((float)($m['saldo'] ?? 0), 2) : '—' ?></small>
+              </td>
+              <td><small class="text-muted"><?= e($m['notas'] ?? '—') ?></small></td>
+              <td><small class="text-muted"><?= e(trim((string)($m['responsable'] ?? '')) ?: '—') ?></small></td>
+              <td class="no-print">
+                <?php if ($is_abono && !empty($m['folio'])): ?>
+                  <div class="btn-group btn-group-sm">
+                    <a href="?r=cobrador.ticket&id_abono=<?= (int)$m['folio'] ?>" class="btn btn-outline-primary" title="Reimprimir ticket">
+                      🧾 <span class="ms-1">Ticket</span>
+                    </a>
+                  </div>
+                <?php else: ?>
+                  <span class="text-muted small">—</span>
+                <?php endif; ?>
+              </td>
+            </tr>
+          <?php endforeach; ?>
+
+          <?php if (empty($movs)): ?>
+            <tr>
+              <td colspan="8" class="text-center text-muted py-4">No hay movimientos para este contrato.</td>
+            </tr>
+          <?php endif; ?>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <?php if ($print): ?>
+    <script>window.print();</script>
+  <?php endif; ?>
+
+  <?php render('Estado de cuenta', ob_get_clean());
   break;
 
 case 'ticket':
