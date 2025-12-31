@@ -1,32 +1,53 @@
 <?php
-// app/modules/imprimirM.php
+// 1. INICIO DEL BUFFER (Captura cualquier salida accidental)
+ob_start();
 
-// 1. Cargar configuración y BD (Igual que en imprimirL.php)
-if (file_exists(__DIR__.'/../config.php')) {
-    require_once __DIR__.'/../config.php';
-} elseif (file_exists(__DIR__.'/../core/config.php')) {
-    require_once __DIR__.'/../core/config.php';
-} else {
-    // Fallback silencioso o error JSON
-    die(json_encode([['type'=>0, 'content'=>'Error: Config no encontrada', 'align'=>1]]));
-}
-
+require_once __DIR__.'/../core/bootstrap.php';
 require_once __DIR__.'/../core/db.php';
 
-// 2. Obtener ID y validar
-$id_abono = (int)($_GET['id_abono'] ?? 0);
+
+// Configuración de errores: Ocultarlos en pantalla para no romper el JSON
+ini_set('display_errors', 0);
+error_reporting(E_ALL);
+
+// Headers para evitar caché
+header("Cache-Control: no-store, no-cache, must-revalidate, max-age=0");
+header("Cache-Control: post-check=0, pre-check=0", false);
+header("Pragma: no-cache");
+header('Content-Type: application/json; charset=utf-8');
+
+// --- Cargas de archivos ---
+// Usamos rutas absolutas para evitar problemas
+
+
+
+// --- Lógica ---
+
+$id_abono = isset($_GET['id_abono']) ? (int)$_GET['id_abono'] : 0;
 $response = [];
 
-if ($id_abono <= 0) {
-    echo json_encode([['type'=>0, 'content'=>'Error: ID inválido', 'align'=>1]]);
+// Función para salir con error seguro
+function sendError($msg) {
+    // Limpiamos buffer antes de salir
+    ob_clean(); 
+    echo json_encode([[
+        'type' => 0,
+        'content' => $msg,
+        'align' => 1,
+        'bold' => 0,
+        'format' => 0
+    ]]);
     exit;
 }
 
-// 3. Consultar datos (Misma consulta que el PDF)
+if ($id_abono <= 0) {
+    sendError('Error: ID invalido');
+}
+
 $sql = "
     SELECT 
         a.id_abono, a.fecha_registro, a.cant_abono, a.saldo,
-        c.id_contrato, c.estatus, c.tipo_contrato, c.costo_final, c.tipo_pago,
+        c.id_contrato, c.estatus, c.tipo_contrato, 
         t.titular,
         CONCAT(p.nombre, ' ', p.apellido_p) AS nombre_cobrador
     FROM futuro_abonos a
@@ -38,86 +59,96 @@ $sql = "
     LIMIT 1
 ";
 
+// Asegúrate que tu función qone() existe y funciona. Si falla, el script muere.
+// Si usas PDO directo, adáptalo. Asumo que qone() es de tu framework.
 $datos = qone($sql, [$id_abono]);
 
 if (!$datos) {
-    echo json_encode([['type'=>0, 'content'=>'Error: Ticket no encontrado', 'align'=>1]]);
-    exit;
+    sendError('Ticket no encontrado');
 }
 
-// 4. Funciones auxiliares
+// --- Funciones Auxiliares ---
+
 function asMoney($val) {
     return '$' . number_format((float)$val, 2);
 }
 
-// Clase simple para estructurar los datos según pide la app
-class Item {
-    public $type = 0;      // 0: Texto, 1: Imagen
-    public $content = '';  // Texto a imprimir
-    public $align = 0;     // 0: Izq, 1: Centro, 2: Der
-    public $bold = 0;      // 0: Normal, 1: Negrita
-    public $format = 0;    // Tamaño: 0 normal, 1 doble altura, etc.
+function fila($izquierda, $derecha) {
+    $ancho_papel = 32; 
+    // Limpieza de caracteres extraños para el conteo
+    $txt_izq = trim((string)$izquierda);
+    $txt_der = trim((string)$derecha);
     
-    // Constructor rápido
-    public function __construct($content, $align=0, $bold=0, $format=0) {
-        $this->content = (string)$content;
-        $this->align = $align;
-        $this->bold = $bold;
-        $this->format = $format;
-    }
+    // mb_strlen cuenta caracteres reales, no bytes
+    $len_izq = mb_strlen($txt_izq, 'UTF-8');
+    $len_der = mb_strlen($txt_der, 'UTF-8');
+    
+    $espacios = $ancho_papel - ($len_izq + $len_der);
+    if ($espacios < 1) $espacios = 1;
+    
+    return $txt_izq . str_repeat(' ', $espacios) . $txt_der;
 }
 
+// --- Construcción del Array (Sin Clases para máxima compatibilidad) ---
+// A veces json_encode con objetos privados da problemas, usaremos Arrays asociativos puros.
+
+function addItem($content, $align=0, $bold=0, $format=0) {
+    return [
+        "type" => 0,              // INT puro
+        "content" => (string)$content,
+        "align" => (int)$align,   // INT puro
+        "bold" => (int)$bold,     // INT puro
+        "format" => (int)$format  // INT puro
+    ];
+}
+
+$response[] = addItem("GRUPO URENA FUNERARIOS", 1, 1, 1); // Evitar Ñ en título por si acaso
+$response[] = addItem("Independencia No. 708", 1);
+$response[] = addItem("Col. San Miguel", 1);
+$response[] = addItem("Tel. 477-7122326", 1);
+$response[] = addItem("--------------------------------", 1, 1);
+
+$response[] = addItem("RECIBO DE PAGO", 1, 1, 1);
+$response[] = addItem(" "); 
+
+$response[] = addItem(fila("Contrato:", $datos['id_contrato']));
+$response[] = addItem("Titular:", 0, 1);
+// Convertir a UTF8 explícito si tu BD no lo está
+$titular = mb_convert_encoding($datos['titular'], 'UTF-8', 'auto');
+$response[] = addItem($titular, 0, 0);
+
+$response[] = addItem(fila("Estatus:", $datos['estatus']));
+$response[] = addItem("--------------------------------", 1, 1);
+
+$folio = str_pad($datos['id_abono'], 6, "0", STR_PAD_LEFT);
+$response[] = addItem(fila("Folio:", $folio), 0, 1);
+$response[] = addItem(fila("Fecha:", date('d/m/y H:i', strtotime($datos['fecha_registro']))));
+
+$response[] = addItem(" ");
+$response[] = addItem("IMPORTE PAGADO", 1, 1, 0);
+$response[] = addItem(asMoney($datos['cant_abono']), 1, 1, 1);
+
+$response[] = addItem(" ");
+$response[] = addItem(fila("Saldo Restante:", asMoney($datos['saldo'])));
+$response[] = addItem("Cobrador:", 0, 1);
+$cobrador = $datos['nombre_cobrador'] ? $datos['nombre_cobrador'] : 'Oficina';
+$response[] = addItem($cobrador, 0);
+
+$response[] = addItem("--------------------------------", 1, 1);
+$response[] = addItem("Gracias por su confianza.", 1);
+$response[] = addItem("\n\n\n", 0); // Saltos finales obligatorios
+
 // ---------------------------------------------------------
-// CONSTRUCCIÓN DEL TICKET (JSON)
+// 2. SALIDA LIMPIA (Aquí ocurre la magia)
 // ---------------------------------------------------------
 
-// --- Logo (Opcional, si la app soporta imagen por URL) ---
-// $img = new Item('', 1);
-// $img->type = 1;
-// $img->path = 'http://tudominio.com/logo_bwy.png'; // Debe ser blanco y negro pequeño
-// $response[] = $img;
+// Borramos TODO lo que se haya impreso antes (espacios en includes, warnings, etc)
+ob_clean(); 
 
-// --- Encabezado ---
-$response[] = new Item("GRUPO UREÑA FUNERARIOS", 1, 1, 1); // Centrado, Negrita, Grande
-$response[] = new Item("Independencia No. 708", 1);
-$response[] = new Item("Col. San Miguel", 1);
-$response[] = new Item("Tel. 477-7122326", 1);
-$response[] = new Item("--------------------------------", 1);
+// Imprimimos SOLO el JSON
+echo json_encode($response, JSON_FORCE_OBJECT);
 
-// --- Datos Contrato ---
-$response[] = new Item("RECIBO DE PAGO", 1, 1, 1);
-$response[] = new Item(" ", 0); // Espacio vacío
 
-$response[] = new Item("Contrato: " . $datos['id_contrato'], 0, 1);
-$response[] = new Item("Titular:  " . $datos['titular'], 0, 0);
-$response[] = new Item("Estatus:  " . $datos['estatus'], 0);
-$response[] = new Item("Tipo:     " . $datos['tipo_contrato'], 0);
-$response[] = new Item("--------------------------------", 1);
-
-// --- Datos Financieros ---
-// Alinear números a la derecha suele verse mejor, pero requiere calcular espacios.
-// Aquí lo haremos simple línea por línea.
-
-$response[] = new Item("Folio Abono: " . str_pad($datos['id_abono'], 6, "0", STR_PAD_LEFT), 0, 1);
-$response[] = new Item("Fecha: " . date('d/m/Y H:i', strtotime($datos['fecha_registro'])), 0);
-
-$response[] = new Item(" ", 0);
-$response[] = new Item("IMPORTE PAGADO:", 1, 0);
-$response[] = new Item(asMoney($datos['cant_abono']), 1, 1, 1); // Centrado, Grande
-
-$response[] = new Item(" ", 0);
-$response[] = new Item("Saldo Restante: " . asMoney($datos['saldo']), 0);
-$response[] = new Item("Cobrador: " . ($datos['nombre_cobrador'] ?? 'Oficina'), 0);
-
-// --- Pie de página ---
-$response[] = new Item("--------------------------------", 1);
-$response[] = new Item("Gracias por su confianza.", 1);
-$response[] = new Item("Fue un placer atenderle.", 1);
-$response[] = new Item(" ", 0);
-$response[] = new Item(" ", 0); // Espacio extra para cortar papel
-
-// 5. Salida JSON
-// Importante: Cabecera JSON y NO usar JSON_FORCE_OBJECT
-header('Content-Type: application/json; charset=utf-8');
-echo json_encode($response, JSON_UNESCAPED_UNICODE);
+// Finalizamos el script
+exit;
 ?>
