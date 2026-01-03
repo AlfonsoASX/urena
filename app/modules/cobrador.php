@@ -644,8 +644,7 @@ case 'estado':
     </div>
 
     <div class="no-print d-flex gap-2">
-      <a href="?r=cobrador.contratos" class="btn btn-sm btn-outline-secondary">← Volver</a>
-      <a href="?r=cobrador.estado&id_contrato=<?= (int)$id_contrato ?>&print=1" target="_blank" class="btn btn-sm btn-outline-secondary">📄 PDF</a>
+      
       <button onclick="window.print();" class="btn btn-sm btn-primary">🖨️ Imprimir</button>
     </div>
   </div>
@@ -663,7 +662,7 @@ case 'estado':
               <th class="text-end">Saldo</th>
               <th>Notas</th>
               <th>Responsable</th>
-              <th class="no-print" style="width:170px">Acciones</th>
+
             </tr>
           </thead>
           <tbody>
@@ -681,17 +680,8 @@ case 'estado':
               </td>
               <td><small class="text-muted"><?= e($m['notas'] ?? '—') ?></small></td>
               <td><small class="text-muted"><?= e(trim((string)($m['responsable'] ?? '')) ?: '—') ?></small></td>
-              <td class="no-print">
-                <?php if ($is_abono && !empty($m['folio'])): ?>
-                  <div class="btn-group btn-group-sm">
-                    <a href="?r=cobrador.ticket&id_abono=<?= (int)$m['folio'] ?>" class="btn btn-outline-primary" title="Reimprimir ticket">
-                      🧾 <span class="ms-1">Ticket</span>
-                    </a>
-                  </div>
-                <?php else: ?>
-                  <span class="text-muted small">—</span>
-                <?php endif; ?>
-              </td>
+
+
             </tr>
           <?php endforeach; ?>
 

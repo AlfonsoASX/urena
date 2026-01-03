@@ -169,6 +169,7 @@ case 'contratos':
           <td class="d-flex gap-2">
             <a class="btn btn-outline-success btn-sm" href="?r=pagos.nuevo_abono&id_contrato=<?= (int)$r['id_contrato'] ?>">Abonar</a>
             <a class="btn btn-outline-secondary btn-sm" href="?r=pagos.editar_contrato&id_contrato=<?= (int)$r['id_contrato'] ?>">Editar</a>
+            <a class="btn btn-outline-secondary btn-sm" href="?r=cobrador.estado&id_contrato=<?= (int)$r['id_contrato'] ?>">Estado de cuenta</a>
           </td>
         </tr>
         <?php endforeach; ?>
