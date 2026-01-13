@@ -43,7 +43,82 @@ function cobrador_saldo_contrato(PDO $pdo, int $id_contrato, float $monto_nuevo 
 
   return ['costo_final' => $costo, 'pagado' => $pagado, 'saldo' => $saldo];
 }
+/**
+ * Obtiene la lista de contratos con filtros, ordenamiento y PAGINACIÓN
+ */
+function cobrador_contratos_paginado(int $id_personal, bool $soloAsignados = true, string $busqueda = '', string $orden = 'prioridad', int $pagina = 1, int $limite = 10): array {
+    $offset = ($pagina - 1) * $limite;
 
+    // Lista blanca de ordenamientos
+    $orderBySQL = match($orden) {
+        'id'      => 'c.id_contrato DESC',
+        'titular' => 't.titular ASC',
+        'monto'   => 'c.costo_final DESC',
+        'estatus' => 'c.estatus ASC',
+        default   => 'fecha_proxima_visita IS NULL ASC, fecha_proxima_visita ASC'
+    };
+
+    // Base del Query para WHERE y JOINs (Reutilizado para conteo y selección)
+    $baseSql = "
+        FROM futuro_contratos c
+        ". ($soloAsignados ? "INNER JOIN futuro_contrato_cobrador fc ON fc.id_contrato = c.id_contrato" : "") ."
+        LEFT JOIN vw_titular_contrato t ON t.id_contrato = c.id_contrato
+        LEFT JOIN titular_contrato tc ON tc.id_contrato = c.id_contrato
+        LEFT JOIN titular_dom td ON td.id_titular = tc.id_titular
+        LEFT JOIN domicilios d ON d.id_domicilio = td.id_domicilio
+        WHERE 1=1
+    ";
+
+    $params = [];
+
+    // 1. Filtros
+    if ($soloAsignados) {
+        $baseSql .= " AND fc.id_personal = ?";
+        $params[] = $id_personal;
+    }
+
+    if (!empty($busqueda)) {
+        $baseSql .= " AND (c.id_contrato LIKE ? OR t.titular LIKE ? OR TRIM(CONCAT(IFNULL(d.calle,''),' ',IFNULL(CONCAT('#', d.num_ext),''),', ',IFNULL(d.colonia,''),', ',IFNULL(d.municipio,''))) LIKE ?)";
+        $term = "%$busqueda%";
+        $params[] = $term;
+        $params[] = $term;
+        $params[] = $term;
+    }
+
+    // 2. Obtener el TOTAL de registros (Para la paginación)
+    // Usamos COUNT(DISTINCT) porque la consulta original tenía GROUP BY
+    $sqlCount = "SELECT COUNT(DISTINCT c.id_contrato) as total " . $baseSql;
+    $countRow = qone($sqlCount, $params);
+    $totalRegistros = (int)($countRow['total'] ?? 0);
+    $totalPaginas = ceil($totalRegistros / $limite);
+
+    // 3. Obtener los DATOS paginados
+    $sqlData = "
+        SELECT 
+            c.id_contrato, c.costo_final, c.estatus, t.titular,
+            TRIM(CONCAT(IFNULL(d.calle, ''), ' ', IFNULL(CONCAT('#', d.num_ext), ''), ', ', IFNULL(d.colonia, ''), ', ', IFNULL(d.municipio, ''))) AS direccion,
+            (SELECT g.fecha_registro FROM futuro_gestion g WHERE g.id_contrato = c.id_contrato ORDER BY g.fecha_registro DESC LIMIT 1) AS fecha_ultima_gestion,
+            (SELECT g.notas FROM futuro_gestion g WHERE g.id_contrato = c.id_contrato ORDER BY g.fecha_registro DESC LIMIT 1) AS ultima_nota,
+            (SELECT g.fecha_proxima_visita FROM futuro_gestion g WHERE g.id_contrato = c.id_contrato ORDER BY g.fecha_registro DESC LIMIT 1) AS fecha_proxima_visita,
+            COALESCE((SELECT SUM(a.cant_abono) FROM futuro_abonos a WHERE a.id_contrato = c.id_contrato),0) AS total_pagado,
+            GREATEST(c.costo_final - COALESCE((SELECT SUM(a2.cant_abono) FROM futuro_abonos a2 WHERE a2.id_contrato = c.id_contrato),0), 0) AS saldo_actual
+        " . $baseSql . "
+        GROUP BY c.id_contrato 
+        ORDER BY $orderBySQL
+        LIMIT $limite OFFSET $offset
+    ";
+
+    $rows = qall($sqlData, $params);
+
+    return [
+        'rows' => $rows,
+        'meta' => [
+            'total' => $totalRegistros,
+            'pages' => $totalPaginas,
+            'current' => $pagina
+        ]
+    ];
+}
 /**
  * Obtiene la lista de contratos con filtros de búsqueda y ordenamiento
  */
@@ -225,158 +300,181 @@ case 'panel':
 
 case 'contratos':
   $id_personal = cobrador_personal_id();
-  $filtro = ($_GET['filtro'] ?? '') === 'todos' ? false : true; // True = Solo asignados
+  $filtro = ($_GET['filtro'] ?? '') === 'todos' ? false : true; 
 
-  // Capturar parámetros de búsqueda y orden
+  // Capturar parámetros
   $busqueda = trim($_GET['q'] ?? '');
   $orden    = $_GET['sort'] ?? 'prioridad';
+  
+  // Paginación: Página actual (por defecto 1) y Límite (fijo a 10)
+  $pagina   = max(1, (int)($_GET['p'] ?? 1));
+  $limite   = 12;
 
-  $rows = cobrador_contratos($id_personal, $filtro, $busqueda, $orden);
+  // Llamada a la nueva función paginada
+  $resultado = cobrador_contratos_paginado($id_personal, $filtro, $busqueda, $orden, $pagina, $limite);
+  $rows = $resultado['rows'];
+  $meta = $resultado['meta'];
 
   ob_start(); ?>
 
   <div class="row mb-3 align-items-center g-2">
-    <div class="col-md-4">
-      <h1 class="h4 m-0"><?= $filtro ? 'Mis contratos' : 'Todos los contratos' ?></h1>
+    <div class="col-12 col-md-4">
+      <h1 class="h4 m-0"><?= $filtro ? 'Mis contratos' : 'Todos' ?> <small class="text-muted fs-6">(<?= $meta['total'] ?>)</small></h1>
     </div>
 
-    <div class="col-md-5">
-      <form action="" method="get" class="d-flex">
+    <div class="col-12 col-md-8">
+      <form action="" method="get" class="d-flex gap-2">
         <input type="hidden" name="r" value="cobrador.contratos">
         <?php if(!$filtro): ?><input type="hidden" name="filtro" value="todos"><?php endif; ?>
         <input type="hidden" name="sort" value="<?= e($orden) ?>">
 
         <div class="input-group">
-          <input type="text" name="q" class="form-control form-control-sm" placeholder="Buscar titular, ID o dirección..." value="<?= e($busqueda) ?>">
-          <button class="btn btn-primary btn-sm" type="submit">🔍</button>
+          <input type="text" name="q" class="form-control" placeholder="Buscar..." value="<?= e($busqueda) ?>">
+          <button class="btn btn-primary" type="submit">🔍</button>
           <?php if($busqueda): ?>
-             <a href="?r=cobrador.contratos<?= $filtro ? '' : '&filtro=todos' ?>" class="btn btn-outline-secondary btn-sm" title="Limpiar búsqueda">×</a>
+             <a href="?r=cobrador.contratos<?= $filtro ? '' : '&filtro=todos' ?>" class="btn btn-outline-secondary">×</a>
           <?php endif; ?>
+        </div>
+        
+        <div class="btn-group">
+            <a href="?r=cobrador.contratos&q=<?=e($busqueda)?>" class="btn <?= $filtro ? 'btn-dark' : 'btn-outline-dark' ?>">Míos</a>
+            <a href="?r=cobrador.contratos&filtro=todos&q=<?=e($busqueda)?>" class="btn <?= !$filtro ? 'btn-dark' : 'btn-outline-dark' ?>">Todos</a>
         </div>
       </form>
     </div>
-
-    <div class="col-md-3 text-md-end">
-      <div class="btn-group btn-group-sm">
-        <a href="?r=cobrador.contratos&q=<?=e($busqueda)?>" class="btn <?= $filtro ? 'btn-primary' : 'btn-outline-primary' ?>">Asignados</a>
-        <a href="?r=cobrador.contratos&filtro=todos&q=<?=e($busqueda)?>" class="btn <?= !$filtro ? 'btn-primary' : 'btn-outline-primary' ?>">Todos</a>
-      </div>
-    </div>
   </div>
 
-  <?php 
-  // Helper local para crear enlaces de ordenamiento que no rompan la búsqueda actual
-  $sortLink = function($col, $label) use ($orden, $filtro, $busqueda) {
-      $active = $orden === $col;
-      $icon = $active ? ($col === 'prioridad' || $col === 'estatus' ? ' ▲' : ' ▼') : ''; // Flecha simple
-      $url = "?r=cobrador.contratos&sort=$col";
-      if (!$filtro) $url .= "&filtro=todos";
-      if ($busqueda) $url .= "&q=" . urlencode($busqueda);
+  <div class="mb-3 d-flex gap-2 overflow-auto pb-2">
+    <span class="text-muted align-self-center small">Ordenar:</span>
+    <?php 
+    $sortOptions = ['prioridad' => 'Visita', 'titular' => 'Nombre', 'monto' => 'Deuda', 'id' => 'ID'];
+    foreach($sortOptions as $key => $label): 
+        $active = $orden === $key;
+        $url = "?r=cobrador.contratos&sort=$key" . ($filtro?'':'&filtro=todos') . ($busqueda?'&q='.urlencode($busqueda):'');
+    ?>
+        <a href="<?= $url ?>" class="btn btn-sm rounded-pill <?= $active ? 'btn-secondary' : 'btn-outline-secondary' ?>">
+            <?= $label ?> <?= $active ? '▼' : '' ?>
+        </a>
+    <?php endforeach; ?>
+  </div>
 
-      $class = $active ? 'text-dark fw-bold text-decoration-none' : 'text-muted text-decoration-none';
-      return "<a href='$url' class='$class'>$label$icon</a>";
-  };
-  ?>
-
-  <div class="table-responsive">
-    <table class="table table-striped table-hover table-sm align-middle">
-      <thead class="table-light">
-        <tr>
-          <th><?= $sortLink('id', 'ID') ?></th>
-          <th><?= $sortLink('titular', 'Titular') ?></th>
-          <th>Dirección</th>
-          <th><?= $sortLink('monto', 'Costo') ?></th>
-          <th>Saldo</th>
-          <th><?= $sortLink('estatus', 'Estatus') ?></th>
-          <th><?= $sortLink('prioridad', '📅 Prox. Visita') ?></th>
-          <th>🕒 Ult. Gestión</th>
-          <th>📝 Nota</th>
-          <th style="width:220px">Acciones</th>
-        </tr>
-      </thead>
-      <tbody>
-      <?php foreach ($rows as $r): 
+  <div class="row g-3">
+    <?php foreach ($rows as $r): 
         $direccion = trim($r['direccion'] ?? '');
         $direccion = trim($direccion, ', ');
         $link_maps = $direccion ? 'https://www.google.com/maps/search/?api=1&query=' . urlencode($direccion . ', León, Guanajuato') : null;
 
+        // Lógica de colores por fecha
         $fecha = $r['fecha_proxima_visita'];
-        $clase = 'text-muted';
-        $texto = '—';
+        $claseFecha = 'text-muted';
+        $textoFecha = 'Sin cita';
         if ($fecha) {
-          $hoy = date('Y-m-d');
-          if ($fecha > $hoy) { 
-              $clase = 'text-success fw-semibold'; 
-              $texto = '🟢 ' . date('d/m', strtotime($fecha)); 
-          } elseif ($fecha == $hoy) { 
-              $clase = 'text-primary fw-bold'; 
-              $texto = '🔵 HOY'; 
-          } else { 
-              $clase = 'text-danger fw-bold'; 
-              $texto = '🔴 ' . date('d/m', strtotime($fecha)); 
-          }
+            $hoy = date('Y-m-d');
+            if ($fecha > $hoy) { 
+                $claseFecha = 'text-success fw-bold'; 
+                $textoFecha = '🟢 ' . date('d/m', strtotime($fecha)); 
+            } elseif ($fecha == $hoy) { 
+                $claseFecha = 'text-primary fw-bold'; 
+                $textoFecha = '🔵 HOY'; 
+            } else { 
+                $claseFecha = 'text-danger fw-bold'; 
+                $textoFecha = '🔴 ' . date('d/m', strtotime($fecha)); 
+            }
         }
-      ?>
-        <tr>
-          <td><small class="font-monospace"><?= e($r['id_contrato']) ?></small></td>
-          <td class="fw-bold"><?= e($r['titular'] ?? '—') ?></td>
-          <td>
-             <div class="d-flex align-items-center">
-                <small class="d-block text-truncate" style="max-width: 180px;" title="<?= e($direccion) ?>">
-                    <?= e($direccion ?: 'Sin dirección') ?>
-                </small>
-             </div>
-          </td>
-          <td><small>$<?= number_format((float)$r['costo_final'], 2) ?></small></td>
-          <td><small class="text-danger">$<?= number_format((float)($r['saldo_actual'] ?? 0), 2) ?></small></td>
-          <td>
-            <span class="badge bg-<?= ($r['estatus'] ?? '') === 'activo' ? 'success' : 'secondary' ?>">
-                <?= substr(e($r['estatus'] ?? ''), 0, 3) ?>
-            </span>
-          </td>
-          <td class="<?= $clase ?>"><small><?= $texto ?></small></td>
-          <td><small class="text-muted"><?= $r['fecha_ultima_gestion'] ? date('d/m', strtotime($r['fecha_ultima_gestion'])) : '—' ?></small></td>
-          <td>
-            <small class="d-block text-truncate text-muted" style="max-width: 120px;" title="<?= e($r['ultima_nota'] ?? '') ?>">
-                <?= e($r['ultima_nota'] ?? '—') ?>
-            </small>
-          </td>
-          <td>
-            <div class="btn-group btn-group-sm">
-              <a href="?r=cobrador.gestion&id_contrato=<?= $r['id_contrato'] ?>" class="btn btn-outline-success" title="Registrar gestión">
-                💲 <span class="ms-1">Gestión</span>
-              </a>
-              <a href="?r=cobrador.pagos&id_contrato=<?= $r['id_contrato'] ?>" class="btn btn-outline-dark" title="Ver pagos">
-                🧾 <span class="ms-1">Pagos</span>
-              </a>
-              <a href="?r=cobrador.estado&id_contrato=<?= $r['id_contrato'] ?>" class="btn btn-outline-secondary" title="Ver estado de cuenta">
-                📑 <span class="ms-1">Estado</span>
-              </a>
-              <?php if ($link_maps): ?>
-                <a href="<?= $link_maps ?>" target="_blank" class="btn btn-outline-primary" title="Ver en mapa">
-                  🗺️ <span class="ms-1">Mapa</span>
-                </a>
-              <?php else: ?>
-                <a href="#" class="btn btn-outline-primary disabled" tabindex="-1" aria-disabled="true" title="Sin dirección">
-                  🗺️ <span class="ms-1">Mapa</span>
-                </a>
-              <?php endif; ?>
+    ?>
+    <div class="col-12 col-md-6 col-lg-4">
+        <div class="card h-100 shadow-sm border-0">
+            <div class="card-header bg-white d-flex justify-content-between align-items-center">
+                <span class="badge bg-light text-dark border">#<?= e($r['id_contrato']) ?></span>
+                <span class="badge bg-<?= ($r['estatus'] ?? '') === 'activo' ? 'success' : 'secondary' ?>">
+                    <?= strtoupper(e($r['estatus'] ?? '')) ?>
+                </span>
             </div>
-          </td>
-        </tr>
-      <?php endforeach; ?>
+            <div class="card-body">
+                <h5 class="card-title mb-1 text-truncate">
+                    <a href="?r=cobrador.estado&id_contrato=<?= $r['id_contrato'] ?>" class="text-decoration-none text-dark">
+                        <?= e($r['titular'] ?? 'Sin Titular') ?>
+                    </a>
+                </h5>
+                
+                <p class="card-text text-muted small mb-2">
+                    <i class="opacity-50">📍</i> <?= e($direccion ?: 'Sin dirección registrada') ?>
+                </p>
 
-      <?php if (empty($rows)): ?>
-        <tr>
-            <td colspan="9" class="text-center py-4 text-muted">
-                No se encontraron contratos.
-                <?php if($busqueda): ?><br><a href="?r=cobrador.contratos">Mostrar todos</a><?php endif; ?>
-            </td>
-        </tr>
-      <?php endif; ?>
-      </tbody>
-    </table>
+                <div class="row g-0 mt-3 bg-light rounded p-2 text-center">
+                    <div class="col border-end">
+                        <small class="text-muted d-block" style="font-size:0.75rem">SALDO</small>
+                        <span class="text-danger fw-bold">$<?= number_format((float)($r['saldo_actual'] ?? 0), 0) ?></span>
+                    </div>
+                    <div class="col border-end">
+                        <small class="text-muted d-block" style="font-size:0.75rem">VISITA</small>
+                        <span class="<?= $claseFecha ?>"><?= $textoFecha ?></span>
+                    </div>
+                    <div class="col">
+                        <small class="text-muted d-block" style="font-size:0.75rem">ULT. GESTIÓN</small>
+                        <span><?= $r['fecha_ultima_gestion'] ? date('d/m', strtotime($r['fecha_ultima_gestion'])) : '—' ?></span>
+                    </div>
+                </div>
+                
+                <?php if(!empty($r['ultima_nota'])): ?>
+                    <div class="alert alert-warning p-2 mt-2 mb-0 small text-truncate">
+                        📝 <?= e($r['ultima_nota']) ?>
+                    </div>
+                <?php endif; ?>
+            </div>
+            
+            <div class="card-footer bg-white border-top-0 d-grid gap-2 pb-3">
+                <a href="?r=cobrador.gestion&id_contrato=<?= $r['id_contrato'] ?>" class="btn btn-primary">
+                    💲 Registrar Cobro / Visita
+                </a>
+                <div class="d-flex gap-2">
+                    <a href="?r=cobrador.pagos&id_contrato=<?= $r['id_contrato'] ?>" class="btn btn-outline-dark flex-grow-1 btn-sm">
+                        🧾 Historial
+                    </a>
+                    <?php if ($link_maps): ?>
+                        <a href="<?= $link_maps ?>" target="_blank" class="btn btn-outline-primary flex-grow-1 btn-sm">
+                            🗺️ Mapa
+                        </a>
+                    <?php else: ?>
+                        <button disabled class="btn btn-outline-secondary flex-grow-1 btn-sm">Sin Mapa</button>
+                    <?php endif; ?>
+                </div>
+            </div>
+        </div>
+    </div>
+    <?php endforeach; ?>
+
+    <?php if (empty($rows)): ?>
+        <div class="col-12 text-center py-5">
+            <h3 class="text-muted">No se encontraron contratos</h3>
+            <p>Intenta con otra búsqueda o filtro.</p>
+        </div>
+    <?php endif; ?>
   </div>
+
+  <?php if ($meta['pages'] > 1): ?>
+  <nav class="mt-4 mb-5">
+    <ul class="pagination justify-content-center">
+        <li class="page-item <?= $pagina <= 1 ? 'disabled' : '' ?>">
+            <a class="page-link" href="?r=cobrador.contratos<?= $filtro?'':'&filtro=todos' ?><?= $busqueda?'&q='.urlencode($busqueda):'' ?>&sort=<?= $orden ?>&p=<?= $pagina - 1 ?>">«</a>
+        </li>
+        
+        <?php for($i = max(1, $pagina - 2); $i <= min($meta['pages'], $pagina + 2); $i++): ?>
+            <li class="page-item <?= $i == $pagina ? 'active' : '' ?>">
+                <a class="page-link" href="?r=cobrador.contratos<?= $filtro?'':'&filtro=todos' ?><?= $busqueda?'&q='.urlencode($busqueda):'' ?>&sort=<?= $orden ?>&p=<?= $i ?>"><?= $i ?></a>
+            </li>
+        <?php endfor; ?>
+
+        <li class="page-item <?= $pagina >= $meta['pages'] ? 'disabled' : '' ?>">
+            <a class="page-link" href="?r=cobrador.contratos<?= $filtro?'':'&filtro=todos' ?><?= $busqueda?'&q='.urlencode($busqueda):'' ?>&sort=<?= $orden ?>&p=<?= $pagina + 1 ?>">»</a>
+        </li>
+    </ul>
+    <div class="text-center text-muted small mt-2">
+        Página <?= $pagina ?> de <?= $meta['pages'] ?>
+    </div>
+  </nav>
+  <?php endif; ?>
+
   <?php render('Contratos del cobrador', ob_get_clean());
   break;
 
