@@ -16,13 +16,32 @@ function __vendedor_actual_id(int $id_contrato): int {
   return (int)($r['id_personal'] ?? 0);
 }
 
+function __fecha_es($fecha): string {
+  if (!$fecha) return '';
+  try {
+    $dt = ($fecha instanceof DateTime) ? $fecha : new DateTime(is_string($fecha) ? $fecha : (string)$fecha);
+  } catch (Exception $e) {
+    return '';
+  }
 
+  if (class_exists('IntlDateFormatter')) {
+    $fmt = new IntlDateFormatter('es_MX', IntlDateFormatter::LONG, IntlDateFormatter::NONE, 'America/Mexico_City', IntlDateFormatter::GREGORIAN, "d 'de' MMMM 'de' y");
+    $out = $fmt->format($dt);
+    if ($out !== false) return $out;
+  }
+
+  $meses = [
+    1=>'enero',2=>'febrero',3=>'marzo',4=>'abril',5=>'mayo',6=>'junio',
+    7=>'julio',8=>'agosto',9=>'septiembre',10=>'octubre',11=>'noviembre',12=>'diciembre'
+  ];
+  $d = (int)$dt->format('d');
+  $m = (int)$dt->format('n');
+  $y = (int)$dt->format('Y');
+  return $d.' de '.($meses[$m] ?? $dt->format('F')).' de '.$y;
+}
 
 switch ($action) {
 
-  // ------------------------------------------------------------
-  // 📋 LISTAR CONTRATOS
-  // ------------------------------------------------------------
   case 'listar':
     $rows = qall("
       SELECT c.id_contrato, 
@@ -77,9 +96,6 @@ switch ($action) {
     render('Contratos', ob_get_clean());
     break;
 
-  // ------------------------------------------------------------
-  // 🆕 NUEVO CONTRATO
-  // ------------------------------------------------------------
   case 'nuevo':
     ob_start(); ?>
     <h1 class="h4 mb-3">Nuevo contrato</h1>
@@ -135,9 +151,6 @@ switch ($action) {
     render('Nuevo contrato', ob_get_clean());
     break;
 
-  // ------------------------------------------------------------
-  // 💾 GUARDAR CONTRATO NUEVO
-  // ------------------------------------------------------------
   case 'guardar':
     try {
       db()->beginTransaction();
@@ -175,9 +188,6 @@ switch ($action) {
     }
     break;
 
-  // ------------------------------------------------------------
-  // ✏️ EDITAR CONTRATO
-  // ------------------------------------------------------------
   case 'editar':
     $idc = (int)($_GET['id_contrato'] ?? 0);
     $c = qone("
@@ -246,9 +256,6 @@ switch ($action) {
     render('Editar contrato', ob_get_clean());
     break;
 
-  // ------------------------------------------------------------
-  // 💾 ACTUALIZAR CONTRATO EXISTENTE
-  // ------------------------------------------------------------
   case 'actualizar':
     $idc = (int)($_GET['id_contrato'] ?? 0);
     $id_promotor = (int)($_POST['id_promotor'] ?? 0);
@@ -292,9 +299,6 @@ switch ($action) {
     }
     break;
 
-  // ------------------------------------------------------------
-  // 🖨️ VER CONTRATO
-  // ------------------------------------------------------------
   case 'ver':
     $idc = (int)($_GET['id_contrato'] ?? 0);
     $c = qone("
@@ -308,10 +312,12 @@ switch ($action) {
     ", [$idc]);
     if (!$c) redirect('contratos.listar');
 
+    $fecha_contrato = __fecha_es($c['fecha_registro'] ?? null);
+
     ob_start(); ?>
     <div class="">
       <h2 class="text-center mb-3">Contrato de Servicio de Cremación</h2>
-      <p class="text-end">Folio: <?= $idc ?>/<?= date('Y') ?></p>
+      <p class="text-end">Folio: <?= $idc ?>/<?= date('Y', strtotime($c['fecha_registro'] ?? 'now')) ?></p>
       <p>
         EL C. <strong><?= e(trim("{$c['nombre']} {$c['apellido_p']} {$c['apellido_m']}")) ?></strong>
         con domicilio en <strong><?= e("{$c['calle']} #{$c['num_ext']}".($c['num_int'] ? " Int. {$c['num_int']}" : "")." {$c['colonia']} {$c['municipio']}") ?></strong>
@@ -353,7 +359,7 @@ switch ($action) {
       <div class="mt-5 text-center">
         <p>_________________________<br><?= e(trim("{$c['nombre']} {$c['apellido_p']} {$c['apellido_m']}")) ?><br><small>Contratante</small></p>
         <p>_________________________<br>Lic. Christian Ureña<br><small>Grupo Ureña Funerarios</small></p>
-        <p class="mt-3 text-muted">León, Gto. a <?= date('d \d\e F \d\e Y') ?></p>
+        <p class="mt-3 text-muted">León, Gto. A <?= e($fecha_contrato) ?></p>
       </div>
 
       <div class="text-center mt-4 no-print">
@@ -367,9 +373,6 @@ switch ($action) {
     render("Contrato #$idc", ob_get_clean());
     break;
 
-  // ------------------------------------------------------------
-  // 📄 GENERAR PDF DEL CONTRATO
-  // ------------------------------------------------------------
   case 'pdf':
     $idc = (int)($_GET['id_contrato'] ?? 0);
     $c = qone("
@@ -390,7 +393,9 @@ switch ($action) {
       $titular = trim("{$c['nombre']} {$c['apellido_p']} {$c['apellido_m']}");
       $dom = trim("{$c['calle']} #{$c['num_ext']}".($c['num_int'] ? " Int. {$c['num_int']}" : "")." {$c['colonia']} {$c['municipio']}");
       $costo = number_format((float)$c['costo_final'], 2);
-      $folio = $idc.'/'.date('Y');
+      $anio_folio = date('Y', strtotime($c['fecha_registro'] ?? 'now'));
+      $folio = $idc.'/'.$anio_folio;
+      $fecha_contrato = __fecha_es($c['fecha_registro'] ?? null);
 
       $html = '<html><head><meta charset="utf-8">
       <style>
@@ -427,7 +432,7 @@ switch ($action) {
       $html .= '<div class="firmas">
         <div class="firma">_________________________<br>'.htmlspecialchars($titular,ENT_QUOTES,'UTF-8').'<br><span class="muted">Contratante</span></div>
         <div class="firma">_________________________<br>Lic. Christian Ureña<br><span class="muted">Grupo Ureña Funerarios</span></div>
-        <div class="firma muted">León, Gto. A '.date('d').' de '.date('F').' del '.date('Y').'</div>
+        <div class="firma muted">León, Gto. A '.htmlspecialchars($fecha_contrato,ENT_QUOTES,'UTF-8').'</div>
       </div>';
 
       $html .= '</body></html>';

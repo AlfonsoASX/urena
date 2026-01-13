@@ -74,8 +74,20 @@
 -->
 
   <?php if (user_has_role(['administradora','vendedor'])): ?>
+
+    <li class="nav-item dropdown">
+      <a class="nav-link dropdown-toggle" href="#" id="pagosDrop" role="button" data-bs-toggle="dropdown">
+        Contratos
+      </a>
+      <ul class="dropdown-menu" aria-labelledby="pagosDrop">
+        <li><a class="dropdown-item" href="?r=contratos.listar">Lista</a></li>
+        <li><a class="dropdown-item" href="?r=pagos.contratos">Pagos</a></li>
+        <li><a class="dropdown-item" href="?r=rutas.contratos">Armado de rutas</a></li>
+        <li><a class="dropdown-item" href="?r=cobrador.contratos">Vista cobrador</a></li>
+      </ul>
+    </li>
+
     <li class="nav-item">
-      <a class="nav-link" href="?r=contratos.listar">Contratos</a>
     </li>
   <?php endif; ?>
 
@@ -101,6 +113,7 @@
       <ul class="dropdown-menu" aria-labelledby="cobDrop">
         <li><a class="dropdown-item" href="?r=cobrador.panel">Panel</a></li>
         <li><a class="dropdown-item" href="?r=cobrador.contratos">Contratos</a></li>
+
       </ul>
     </li>
   <?php endif; ?>
