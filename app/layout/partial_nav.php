@@ -117,6 +117,11 @@
       </ul>
     </li>
   <?php endif; ?>
+  <?php if (user_has_permission('usuarios.admin') || user_has_role(['administradora','admin'])): ?>
+    <li class="nav-item">
+      <a class="nav-link" href="?r=usuarios.listar">Usuarios</a>
+    </li>
+  <?php endif; ?>
 <!--
   <?php if (user_has_role(['administradora'])): ?>
     <li class="nav-item dropdown">
