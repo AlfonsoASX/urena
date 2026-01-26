@@ -947,6 +947,61 @@ CREATE TABLE `usuarios` (
 -- --------------------------------------------------------
 
 --
+-- Estructura de tabla para la tabla `roles`
+--
+
+DROP TABLE IF EXISTS `roles`;
+CREATE TABLE `roles` (
+  `id` int(11) NOT NULL,
+  `slug` varchar(50) NOT NULL,
+  `nombre` varchar(100) NOT NULL,
+  `es_super` tinyint(1) NOT NULL DEFAULT 0,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp()
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci;
+
+-- --------------------------------------------------------
+
+--
+-- Estructura de tabla para la tabla `permisos`
+--
+
+DROP TABLE IF EXISTS `permisos`;
+CREATE TABLE `permisos` (
+  `id` int(11) NOT NULL,
+  `clave` varchar(100) NOT NULL,
+  `descripcion` varchar(255) NOT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp()
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci;
+
+-- --------------------------------------------------------
+
+--
+-- Estructura de tabla para la tabla `usuarios_roles`
+--
+
+DROP TABLE IF EXISTS `usuarios_roles`;
+CREATE TABLE `usuarios_roles` (
+  `usuario_id` int(11) NOT NULL,
+  `rol_id` int(11) NOT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp()
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci;
+
+-- --------------------------------------------------------
+
+--
+-- Estructura de tabla para la tabla `roles_permisos`
+--
+
+DROP TABLE IF EXISTS `roles_permisos`;
+CREATE TABLE `roles_permisos` (
+  `rol_id` int(11) NOT NULL,
+  `permiso_id` int(11) NOT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp()
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci;
+
+-- --------------------------------------------------------
+
+--
 -- Estructura de tabla para la tabla `vales_salida`
 --
 
@@ -1449,6 +1504,34 @@ ALTER TABLE `usuarios`
   ADD PRIMARY KEY (`id`);
 
 --
+-- Indices de la tabla `roles`
+--
+ALTER TABLE `roles`
+  ADD PRIMARY KEY (`id`),
+  ADD UNIQUE KEY `uk_roles_slug` (`slug`);
+
+--
+-- Indices de la tabla `permisos`
+--
+ALTER TABLE `permisos`
+  ADD PRIMARY KEY (`id`),
+  ADD UNIQUE KEY `uk_permisos_clave` (`clave`);
+
+--
+-- Indices de la tabla `usuarios_roles`
+--
+ALTER TABLE `usuarios_roles`
+  ADD PRIMARY KEY (`usuario_id`,`rol_id`),
+  ADD KEY `idx_ur_rol` (`rol_id`);
+
+--
+-- Indices de la tabla `roles_permisos`
+--
+ALTER TABLE `roles_permisos`
+  ADD PRIMARY KEY (`rol_id`,`permiso_id`),
+  ADD KEY `idx_rp_permiso` (`permiso_id`);
+
+--
 -- Indices de la tabla `vales_salida`
 --
 ALTER TABLE `vales_salida`
@@ -1795,6 +1878,18 @@ ALTER TABLE `usuarios`
   MODIFY `id` int(11) NOT NULL AUTO_INCREMENT;
 
 --
+-- AUTO_INCREMENT de la tabla `roles`
+--
+ALTER TABLE `roles`
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT;
+
+--
+-- AUTO_INCREMENT de la tabla `permisos`
+--
+ALTER TABLE `permisos`
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT;
+
+--
 -- AUTO_INCREMENT de la tabla `vales_salida`
 --
 ALTER TABLE `vales_salida`
@@ -1876,6 +1971,20 @@ ALTER TABLE `cortes_pagos`
 ALTER TABLE `cortes_pagos_det`
   ADD CONSTRAINT `fk_corte_det_abono` FOREIGN KEY (`id_abono`) REFERENCES `futuro_abonos` (`id_abono`) ON UPDATE CASCADE,
   ADD CONSTRAINT `fk_corte_det_corte` FOREIGN KEY (`id_corte`) REFERENCES `cortes_pagos` (`id_corte`) ON DELETE CASCADE ON UPDATE CASCADE;
+
+--
+-- Filtros para la tabla `usuarios_roles`
+--
+ALTER TABLE `usuarios_roles`
+  ADD CONSTRAINT `fk_ur_usuario` FOREIGN KEY (`usuario_id`) REFERENCES `usuarios` (`id`) ON UPDATE CASCADE ON DELETE CASCADE,
+  ADD CONSTRAINT `fk_ur_rol` FOREIGN KEY (`rol_id`) REFERENCES `roles` (`id`) ON UPDATE CASCADE ON DELETE CASCADE;
+
+--
+-- Filtros para la tabla `roles_permisos`
+--
+ALTER TABLE `roles_permisos`
+  ADD CONSTRAINT `fk_rp_rol` FOREIGN KEY (`rol_id`) REFERENCES `roles` (`id`) ON UPDATE CASCADE ON DELETE CASCADE,
+  ADD CONSTRAINT `fk_rp_permiso` FOREIGN KEY (`permiso_id`) REFERENCES `permisos` (`id`) ON UPDATE CASCADE ON DELETE CASCADE;
 
 --
 -- Filtros para la tabla `equipo_entrada`
