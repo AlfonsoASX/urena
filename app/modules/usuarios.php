@@ -43,17 +43,17 @@ switch ($action) {
   default:
     if (auth_roles_enabled()) {
       $rows = qall("
-        SELECT u.id, u.usuario, u.nombre, u.perfil,
+        SELECT u.id, u.usuario, u.nombre,
                GROUP_CONCAT(r.nombre ORDER BY r.nombre SEPARATOR ', ') AS roles
         FROM usuarios u
         LEFT JOIN usuarios_roles ur ON ur.usuario_id = u.id
         LEFT JOIN roles r ON r.id = ur.rol_id
-        GROUP BY u.id, u.usuario, u.nombre, u.perfil
+        GROUP BY u.id, u.usuario, u.nombre
         ORDER BY u.nombre ASC
       ");
     } else {
       $rows = qall("
-        SELECT u.id, u.usuario, u.nombre, u.perfil, '' AS roles
+        SELECT u.id, u.usuario, u.nombre, '' AS roles
         FROM usuarios u
         ORDER BY u.nombre ASC
       ");
@@ -82,7 +82,6 @@ switch ($action) {
             <th>ID</th>
             <th>Usuario</th>
             <th>Nombre</th>
-            <th>Perfil</th>
             <th>Roles</th>
             <th style="width:260px">Acciones</th>
           </tr>
@@ -93,7 +92,6 @@ switch ($action) {
             <td><?= (int)$r['id'] ?></td>
             <td><?= e($r['usuario']) ?></td>
             <td><?= e($r['nombre']) ?></td>
-            <td><?= e($r['perfil']) ?></td>
             <td><?= e($r['roles'] ?? '—') ?></td>
             <td class="d-flex flex-wrap gap-2">
               <a class="btn btn-outline-primary btn-sm" href="?r=usuarios.editar&id=<?= (int)$r['id'] ?>">Editar</a>
@@ -109,7 +107,7 @@ switch ($action) {
           </tr>
           <?php endforeach; ?>
           <?php if (empty($rows)): ?>
-          <tr><td colspan="6" class="text-center text-muted">Sin usuarios</td></tr>
+          <tr><td colspan="5" class="text-center text-muted">Sin usuarios</td></tr>
           <?php endif; ?>
         </tbody>
       </table>
@@ -129,7 +127,6 @@ switch ($action) {
           <?= form_input('usuario', 'Usuario', '', ['required'=>true]) ?>
           <?= form_input('nombre', 'Nombre', '', ['required'=>true]) ?>
           <?= form_input('pass', 'Contraseña', '', ['type'=>'password','required'=>true]) ?>
-          <?= form_input('perfil', 'Perfil (legacy)', '', ['help'=>'Se mantiene por compatibilidad con instalaciones anteriores.']) ?>
           <?php if (!empty($roles)): ?>
             <div class="mb-2">
               <label class="form-label">Roles</label>
@@ -160,13 +157,12 @@ switch ($action) {
     $usuario = trim($_POST['usuario'] ?? '');
     $nombre = trim($_POST['nombre'] ?? '');
     $pass = (string)($_POST['pass'] ?? '');
-    $perfil = trim($_POST['perfil'] ?? '');
     if ($usuario === '' || $nombre === '' || $pass === '') {
       flash("<div class='alert alert-warning'>Completa los datos obligatorios.</div>");
       redirect('usuarios.nuevo');
     }
     $hash = password_hash($pass, PASSWORD_DEFAULT);
-    q("INSERT INTO usuarios (usuario, nombre, pass, perfil) VALUES (?,?,?,?)", [$usuario, $nombre, $hash, $perfil]);
+    q("INSERT INTO usuarios (usuario, nombre, pass) VALUES (?,?,?)", [$usuario, $nombre, $hash]);
     $id = (int)db()->lastInsertId();
     $roles_ids = array_map('intval', $_POST['roles'] ?? []);
     usuarios_asignar_roles($id, $roles_ids);
@@ -194,7 +190,6 @@ switch ($action) {
           <?= csrf_field() ?>
           <?= form_input('usuario', 'Usuario', $u['usuario'], ['required'=>true]) ?>
           <?= form_input('nombre', 'Nombre', $u['nombre'], ['required'=>true]) ?>
-          <?= form_input('perfil', 'Perfil (legacy)', $u['perfil'], ['help'=>'Se mantiene por compatibilidad con instalaciones anteriores.']) ?>
           <?php if (!empty($roles)): ?>
             <div class="mb-2">
               <label class="form-label">Roles</label>
@@ -226,12 +221,11 @@ switch ($action) {
     try { csrf_verify(); } catch (RuntimeException $e) { flash("<div class='alert alert-danger'>Sesión inválida.</div>"); redirect('usuarios.listar'); }
     $usuario = trim($_POST['usuario'] ?? '');
     $nombre = trim($_POST['nombre'] ?? '');
-    $perfil = trim($_POST['perfil'] ?? '');
     if ($usuario === '' || $nombre === '') {
       flash("<div class='alert alert-warning'>Completa los datos obligatorios.</div>");
       redirect("usuarios.editar&id={$id}");
     }
-    q("UPDATE usuarios SET usuario=?, nombre=?, perfil=? WHERE id=?", [$usuario, $nombre, $perfil, $id]);
+    q("UPDATE usuarios SET usuario=?, nombre=? WHERE id=?", [$usuario, $nombre, $id]);
     $roles_ids = array_map('intval', $_POST['roles'] ?? []);
     usuarios_asignar_roles($id, $roles_ids);
     flash("<div class='alert alert-success'>Usuario actualizado.</div>");
@@ -263,7 +257,7 @@ switch ($action) {
       q("DELETE FROM usuarios WHERE id=?", [$id]);
       flash("<div class='alert alert-success'>Usuario eliminado.</div>");
     } catch (Exception $e) {
-      flash("<div class='alert alert-danger'>No se pudo eliminar el usuario.</div>");
+      flash("<div class='alert alert-danger'>No se pudo eliminar el usuario.($e)</div>");
     }
     redirect('usuarios.listar');
     break;
@@ -297,7 +291,6 @@ switch ($action) {
             <button type="button" class="btn btn-outline-secondary" onclick="history.back()">
               Volver
             </button>
-
           </div>
         </form>
       </div>
