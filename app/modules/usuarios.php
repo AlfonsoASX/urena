@@ -82,9 +82,9 @@ switch ($action) {
             <th>ID</th>
             <th>Usuario</th>
             <th>Nombre</th>
-            <th>Perfil (legacy)</th>
+            <th>Perfil</th>
             <th>Roles</th>
-            <th style="width:220px">Acciones</th>
+            <th style="width:260px">Acciones</th>
           </tr>
         </thead>
         <tbody>
@@ -98,6 +98,13 @@ switch ($action) {
             <td class="d-flex flex-wrap gap-2">
               <a class="btn btn-outline-primary btn-sm" href="?r=usuarios.editar&id=<?= (int)$r['id'] ?>">Editar</a>
               <a class="btn btn-outline-warning btn-sm" href="?r=usuarios.cambiar_password&id=<?= (int)$r['id'] ?>">Contraseña</a>
+              <form method="post" action="?r=usuarios.eliminar&id=<?= (int)$r['id'] ?>" class="m-0 p-0 d-inline">
+                <?= csrf_field() ?>
+                <button class="btn btn-outline-danger btn-sm"
+                        onclick="return confirm('¿Eliminar usuario #<?= (int)$r['id'] ?> (<?= e($r['usuario']) ?>)? Esta acción no se puede deshacer.');">
+                  Eliminar
+                </button>
+              </form>
             </td>
           </tr>
           <?php endforeach; ?>
@@ -136,7 +143,9 @@ switch ($action) {
           <?php endif; ?>
           <div class="d-flex gap-2">
             <button class="btn btn-primary">Guardar</button>
-            <a href="?r=usuarios.listar" class="btn btn-outline-secondary">Volver</a>
+            <button type="button" class="btn btn-outline-secondary" onclick="history.back()">
+              Volver
+            </button>
           </div>
         </form>
       </div>
@@ -200,7 +209,9 @@ switch ($action) {
           <?php endif; ?>
           <div class="d-flex gap-2">
             <button class="btn btn-primary">Actualizar</button>
-            <a href="?r=usuarios.listar" class="btn btn-outline-secondary">Volver</a>
+            <button type="button" class="btn btn-outline-secondary" onclick="history.back()">
+              Volver
+            </button>
           </div>
         </form>
       </div>
@@ -224,6 +235,36 @@ switch ($action) {
     $roles_ids = array_map('intval', $_POST['roles'] ?? []);
     usuarios_asignar_roles($id, $roles_ids);
     flash("<div class='alert alert-success'>Usuario actualizado.</div>");
+    redirect('usuarios.listar');
+    break;
+
+  case 'eliminar':
+    $id = (int)($_GET['id'] ?? 0);
+    if ($_SERVER['REQUEST_METHOD'] !== 'POST') redirect('usuarios.listar');
+    try { csrf_verify(); } catch (RuntimeException $e) { flash("<div class='alert alert-danger'>Sesión inválida.</div>"); redirect('usuarios.listar'); }
+    if ($id <= 0) redirect('usuarios.listar');
+
+    $me = current_user();
+    if ((int)($me['id'] ?? 0) === $id) {
+      flash("<div class='alert alert-warning'>No puedes eliminar tu propio usuario.</div>");
+      redirect('usuarios.listar');
+    }
+
+    $u = qone("SELECT id, usuario, nombre FROM usuarios WHERE id=?", [$id]);
+    if (!$u) {
+      flash("<div class='alert alert-warning'>Usuario no encontrado.</div>");
+      redirect('usuarios.listar');
+    }
+
+    try {
+      if (auth_roles_enabled()) {
+        q("DELETE FROM usuarios_roles WHERE usuario_id=?", [$id]);
+      }
+      q("DELETE FROM usuarios WHERE id=?", [$id]);
+      flash("<div class='alert alert-success'>Usuario eliminado.</div>");
+    } catch (Exception $e) {
+      flash("<div class='alert alert-danger'>No se pudo eliminar el usuario.</div>");
+    }
     redirect('usuarios.listar');
     break;
 
@@ -253,7 +294,10 @@ switch ($action) {
           <?= form_input('pass', 'Nueva contraseña', '', ['type'=>'password','required'=>true]) ?>
           <div class="d-flex gap-2">
             <button class="btn btn-primary">Actualizar</button>
-            <a href="?r=usuarios.listar" class="btn btn-outline-secondary">Volver</a>
+            <button type="button" class="btn btn-outline-secondary" onclick="history.back()">
+              Volver
+            </button>
+
           </div>
         </form>
       </div>
@@ -271,7 +315,9 @@ switch ($action) {
     ob_start(); ?>
     <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-2 mb-3">
       <h1 class="h4 m-0">Roles</h1>
-      <a href="?r=usuarios.listar" class="btn btn-outline-secondary btn-sm">Volver</a>
+      <button type="button" class="btn btn-outline-secondary" onclick="history.back()">
+        Volver
+      </button>
     </div>
     <div class="card shadow-sm mb-3">
       <div class="card-body">
@@ -359,7 +405,9 @@ switch ($action) {
     ob_start(); ?>
     <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-2 mb-3">
       <h1 class="h4 m-0">Permisos</h1>
-      <a href="?r=usuarios.roles" class="btn btn-outline-secondary btn-sm">Volver</a>
+      <button type="button" class="btn btn-outline-secondary" onclick="history.back()">
+        Volver
+      </button>
     </div>
 
     <div class="card shadow-sm mb-3">
