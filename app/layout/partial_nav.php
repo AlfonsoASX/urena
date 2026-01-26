@@ -73,7 +73,7 @@
   <?php endif; ?>
 -->
 
-  <?php if (user_has_role(['administradora','vendedor'])): ?>
+  <?php if (user_has_role(['administradora','vendedor','futuroadmivo'])): ?>
 
     <li class="nav-item dropdown">
       <a class="nav-link dropdown-toggle" href="#" id="pagosDrop" role="button" data-bs-toggle="dropdown">
@@ -91,7 +91,7 @@
     </li>
   <?php endif; ?>
 
-  <?php if (user_has_role(['administradora','cobrador','vendedor'])): ?>
+  <?php if (user_has_role(['administradora','vendedor','futuroadmivo'])): ?>
     <li class="nav-item dropdown">
       <a class="nav-link dropdown-toggle" href="#" id="pagosDrop" role="button" data-bs-toggle="dropdown">
         Pagos
@@ -105,7 +105,7 @@
     </li>
   <?php endif; ?>
 
-  <?php if (user_has_role(['administradora','cobrador'])): ?>
+  <?php if (user_has_role(['administradora','cobrador','futuroadmivo'])): ?>
     <li class="nav-item dropdown">
       <a class="nav-link dropdown-toggle" href="#" id="cobDrop" role="button" data-bs-toggle="dropdown">
         Cobrador
@@ -117,7 +117,7 @@
       </ul>
     </li>
   <?php endif; ?>
-  <?php if (user_has_permission('usuarios.admin') || user_has_role(['administradora','admin'])): ?>
+  <?php if (user_has_permission('usuarios.admin') || user_has_role(['administradora','admin','futuroadmivo'])): ?>
     <li class="nav-item">
       <a class="nav-link" href="?r=usuarios.listar">Usuarios</a>
     </li>
