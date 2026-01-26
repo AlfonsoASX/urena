@@ -48,6 +48,7 @@ switch ($action) {
         FROM usuarios u
         LEFT JOIN usuarios_roles ur ON ur.usuario_id = u.id
         LEFT JOIN roles r ON r.id = ur.rol_id
+        WHERE u.estatus='ACTIVO'
         GROUP BY u.id, u.usuario, u.nombre
         ORDER BY u.nombre ASC
       ");
@@ -55,6 +56,7 @@ switch ($action) {
       $rows = qall("
         SELECT u.id, u.usuario, u.nombre, '' AS roles
         FROM usuarios u
+        WHERE u.estatus='ACTIVO'
         ORDER BY u.nombre ASC
       ");
     }
@@ -172,7 +174,7 @@ switch ($action) {
 
   case 'editar':
     $id = (int)($_GET['id'] ?? 0);
-    $u = qone("SELECT * FROM usuarios WHERE id=?", [$id]);
+    $u = qone("SELECT * FROM usuarios WHERE id=? AND estatus='ACTIVO'", [$id]);
     if (!$u) { flash("<div class='alert alert-warning'>Usuario no encontrado.</div>"); redirect('usuarios.listar'); }
     $roles = usuarios_roles_disponibles();
     $roles_asignados = [];
@@ -244,7 +246,7 @@ switch ($action) {
       redirect('usuarios.listar');
     }
 
-    $u = qone("SELECT id, usuario, nombre FROM usuarios WHERE id=?", [$id]);
+    $u = qone("SELECT id, usuario, nombre FROM usuarios WHERE id=? AND estatus='ACTIVO'", [$id]);
     if (!$u) {
       flash("<div class='alert alert-warning'>Usuario no encontrado.</div>");
       redirect('usuarios.listar');
@@ -254,17 +256,17 @@ switch ($action) {
       if (auth_roles_enabled()) {
         q("DELETE FROM usuarios_roles WHERE usuario_id=?", [$id]);
       }
-      q("DELETE FROM usuarios WHERE id=?", [$id]);
+      q("UPDATE usuarios SET estatus='INACTIVO' WHERE id=?", [$id]);
       flash("<div class='alert alert-success'>Usuario eliminado.</div>");
     } catch (Exception $e) {
-      flash("<div class='alert alert-danger'>No se pudo eliminar el usuario.($e)</div>");
+      flash("<div class='alert alert-danger'>No se pudo eliminar el usuario.</div>");
     }
     redirect('usuarios.listar');
     break;
 
   case 'cambiar_password':
     $id = (int)($_GET['id'] ?? 0);
-    $u = qone("SELECT id, usuario, nombre FROM usuarios WHERE id=?", [$id]);
+    $u = qone("SELECT id, usuario, nombre FROM usuarios WHERE id=? AND estatus='ACTIVO'", [$id]);
     if (!$u) { flash("<div class='alert alert-warning'>Usuario no encontrado.</div>"); redirect('usuarios.listar'); }
     if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       try { csrf_verify(); } catch (RuntimeException $e) { flash("<div class='alert alert-danger'>Sesión inválida.</div>"); redirect('usuarios.listar'); }
