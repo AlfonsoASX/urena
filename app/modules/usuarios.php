@@ -343,6 +343,7 @@ switch ($action) {
             <th>Nombre</th>
             <th>Super</th>
             <th>Permisos</th>
+            <th style="width:120px">Acciones</th>
           </tr>
         </thead>
         <tbody>
@@ -355,16 +356,74 @@ switch ($action) {
             <td>
               <a class="btn btn-outline-secondary btn-sm" href="?r=usuarios.permisos&rol_id=<?= (int)$rol['id'] ?>">Asignar permisos</a>
             </td>
+            <td>
+              <a class="btn btn-outline-primary btn-sm" href="?r=usuarios.editar_rol&id=<?= (int)$rol['id'] ?>">Editar</a>
+            </td>
           </tr>
           <?php endforeach; ?>
           <?php if (empty($roles)): ?>
-          <tr><td colspan="5" class="text-center text-muted">Sin roles</td></tr>
+          <tr><td colspan="6" class="text-center text-muted">Sin roles</td></tr>
           <?php endif; ?>
         </tbody>
       </table>
     </div>
     <?php
     render('Roles', ob_get_clean());
+    break;
+
+  case 'editar_rol':
+    if (!auth_roles_enabled()) {
+      flash("<div class='alert alert-warning'>No existen las tablas de roles. Ejecuta la migración correspondiente.</div>");
+      redirect('usuarios.listar');
+    }
+    $id = (int)($_GET['id'] ?? 0);
+    $rol = qone("SELECT * FROM roles WHERE id=?", [$id]);
+    if (!$rol) { flash("<div class='alert alert-warning'>Rol no encontrado.</div>"); redirect('usuarios.roles'); }
+    ob_start(); ?>
+    <div class="card shadow-sm">
+      <div class="card-body">
+        <h1 class="h5 mb-3">Editar rol</h1>
+        <form method="post" action="?r=usuarios.actualizar_rol&id=<?= (int)$id ?>" class="row g-2">
+          <?= csrf_field() ?>
+          <div class="col-md-4"><?= form_input('slug', 'Slug', $rol['slug'], ['required'=>true]) ?></div>
+          <div class="col-md-5"><?= form_input('nombre', 'Nombre', $rol['nombre'], ['required'=>true]) ?></div>
+          <div class="col-md-3">
+            <label class="form-label">Super rol</label>
+            <select name="es_super" class="form-select">
+              <option value="0" <?= empty($rol['es_super']) ? 'selected' : '' ?>>No</option>
+              <option value="1" <?= !empty($rol['es_super']) ? 'selected' : '' ?>>Sí</option>
+            </select>
+          </div>
+          <div class="col-12 d-flex gap-2">
+            <button class="btn btn-primary">Guardar cambios</button>
+            <a class="btn btn-outline-secondary" href="?r=usuarios.roles">Volver</a>
+            <a class="btn btn-outline-secondary" href="?r=usuarios.permisos&rol_id=<?= (int)$id ?>">Editar permisos</a>
+          </div>
+        </form>
+      </div>
+    </div>
+    <?php
+    render('Editar rol', ob_get_clean());
+    break;
+
+  case 'actualizar_rol':
+    if (!auth_roles_enabled()) {
+      flash("<div class='alert alert-warning'>No existen las tablas de roles. Ejecuta la migración correspondiente.</div>");
+      redirect('usuarios.listar');
+    }
+    $id = (int)($_GET['id'] ?? 0);
+    if ($_SERVER['REQUEST_METHOD'] !== 'POST') redirect('usuarios.roles');
+    try { csrf_verify(); } catch (RuntimeException $e) { flash("<div class='alert alert-danger'>Sesión inválida.</div>"); redirect('usuarios.roles'); }
+    $slug = trim($_POST['slug'] ?? '');
+    $nombre = trim($_POST['nombre'] ?? '');
+    $es_super = (int)($_POST['es_super'] ?? 0);
+    if ($slug === '' || $nombre === '') {
+      flash("<div class='alert alert-warning'>Completa los datos obligatorios.</div>");
+      redirect('usuarios.editar_rol&id='.$id);
+    }
+    q("UPDATE roles SET slug=?, nombre=?, es_super=? WHERE id=?", [$slug, $nombre, $es_super, $id]);
+    flash("<div class='alert alert-success'>Rol actualizado.</div>");
+    redirect('usuarios.roles');
     break;
 
   case 'guardar_rol':
