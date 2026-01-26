@@ -28,7 +28,7 @@ $allowed = [
   'cobrador'    => ['panel','contratos','pago','pagos','estado','ticket', 'gestion'],
   'contratos'   => ['pdf','listar','nuevo','guardar','editar','actualizar','ver'],
   'rutas'   => ['contratos', 'cobradores', 'asignar', 'asignar_masivo', ''],
-  'usuarios'   => ['listar','nuevo','guardar','editar','actualizar','roles','guardar_rol','permisos','guardar_permiso','asignar_roles','asignar_permisos','cambiar_password'],
+  'usuarios'   => ['listar','nuevo','guardar','editar','actualizar','roles','guardar_rol','permisos','guardar_permiso','asignar_roles','asignar_permisos','cambiar_password', 'eliminar'],
 
 
   // aquí puedes agregar después más módulos como usuarios, rentas, etc.
