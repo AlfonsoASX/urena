@@ -26,9 +26,9 @@ $allowed = [
   'proveedores' => ['listar','nuevo','guardar','editar','actualizar','baja','activar','inactivar'],
   'pagos'       => ['contratos','nuevo_abono','guardar_abono','corte','comisiones','guardar_comision', 'editar_contrato', 'borrar_abono'],
   'cobrador'    => ['panel','contratos','pago','pagos','estado','ticket', 'gestion'],
-  'contratos'   => ['pdf','listar','nuevo','guardar','editar','actualizar','ver'],
+  'contratos'   => ['pdf','listar','nuevo','guardar','editar','actualizar','ver', 'eliminar'],
   'rutas'   => ['contratos', 'cobradores', 'asignar', 'asignar_masivo', ''],
-  'usuarios'   => ['listar','nuevo','guardar','editar','actualizar','roles','guardar_rol','permisos','guardar_permiso','asignar_roles','asignar_permisos','cambiar_password', 'eliminar'],
+  'usuarios'   => ['listar','nuevo','guardar','editar','actualizar','roles','guardar_rol','permisos','guardar_permiso','asignar_roles','asignar_permisos','cambiar_password', 'eliminar', 'editar_rol', 'actualizar_rol'],
 
 
   // aquí puedes agregar después más módulos como usuarios, rentas, etc.

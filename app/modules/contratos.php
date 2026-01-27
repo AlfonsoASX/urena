@@ -40,11 +40,17 @@ function __fecha_es($fecha): string {
   return $d.' de '.($meses[$m] ?? $dt->format('F')).' de '.$y;
 }
 
+function __contrato_estatus_normalizado($v): string {
+  $s = strtoupper(trim((string)$v));
+  if (!in_array($s, ['ACTIVO','INACTIVO'], true)) return 'ACTIVO';
+  return $s;
+}
+
 switch ($action) {
 
   case 'listar':
     $rows = qall("
-      SELECT c.id_contrato, 
+      SELECT c.id_contrato,
              t.nombre, t.apellido_p, t.apellido_m,
              d.calle, d.num_ext, d.num_int, d.colonia, d.municipio,
              c.costo_final, c.estatus
@@ -53,6 +59,7 @@ switch ($action) {
       LEFT JOIN titulares t ON t.id_titular = tc.id_titular
       LEFT JOIN titular_dom td ON td.id_titular = t.id_titular
       LEFT JOIN domicilios d ON d.id_domicilio = td.id_domicilio
+      WHERE c.estatus='ACTIVO'
       ORDER BY c.id_contrato DESC
     ");
 
@@ -71,7 +78,7 @@ switch ($action) {
             <th>Dirección</th>
             <th>Costo final</th>
             <th>Estatus</th>
-            <th style="width:220px">Acciones</th>
+            <th style="width:340px">Acciones</th>
           </tr>
         </thead>
         <tbody>
@@ -81,14 +88,24 @@ switch ($action) {
             <td><?= e(trim($r['nombre'].' '.$r['apellido_p'].' '.$r['apellido_m'])) ?></td>
             <td><?= e("{$r['calle']} #{$r['num_ext']}".($r['num_int'] ? " Int. {$r['num_int']}" : "").", {$r['colonia']}, {$r['municipio']}") ?></td>
             <td>$<?= number_format((float)$r['costo_final'], 2) ?></td>
-            <td><span class="badge bg-<?= $r['estatus']==='activo'?'success':'secondary' ?>"><?= e($r['estatus']) ?></span></td>
-            <td>
-              <a href="?r=contratos.editar&id_contrato=<?= $r['id_contrato'] ?>" class="btn btn-sm btn-outline-primary">✏️ Editar</a>
-              <a href="?r=contratos.ver&id_contrato=<?= $r['id_contrato'] ?>" class="btn btn-sm btn-outline-secondary">👁️ Ver</a>
-              <a href="?r=contratos.pdf&id_contrato=<?= $r['id_contrato'] ?>" class="btn btn-sm btn-outline-danger">📄 PDF</a>
+            <td><span class="badge bg-<?= ($r['estatus']==='ACTIVO')?'success':'secondary' ?>"><?= e($r['estatus']) ?></span></td>
+            <td class="d-flex flex-wrap gap-2">
+              <a href="?r=contratos.editar&id_contrato=<?= (int)$r['id_contrato'] ?>" class="btn btn-sm btn-outline-primary">✏️ Editar</a>
+              <a href="?r=contratos.ver&id_contrato=<?= (int)$r['id_contrato'] ?>" class="btn btn-sm btn-outline-secondary">👁️ Ver</a>
+              <a href="?r=contratos.pdf&id_contrato=<?= (int)$r['id_contrato'] ?>" class="btn btn-sm btn-outline-danger">📄 PDF</a>
+              <form method="post" action="?r=contratos.eliminar&id_contrato=<?= (int)$r['id_contrato'] ?>" class="m-0 p-0 d-inline">
+                <?= csrf_field() ?>
+                <button class="btn btn-sm btn-outline-dark"
+                        onclick="return confirm('¿Desactivar contrato #<?= (int)$r['id_contrato'] ?>?');">
+                  🗑️ Eliminar
+                </button>
+              </form>
             </td>
           </tr>
         <?php endforeach; ?>
+        <?php if (empty($rows)): ?>
+          <tr><td colspan="6" class="text-center text-muted">Sin contratos</td></tr>
+        <?php endif; ?>
         </tbody>
       </table>
     </div>
@@ -101,6 +118,7 @@ switch ($action) {
     <h1 class="h4 mb-3">Nuevo contrato</h1>
 
     <form method="post" action="?r=contratos.guardar">
+      <?= csrf_field() ?>
       <div class="row g-3">
 
         <h5 class="mt-3">Datos del Titular</h5>
@@ -126,7 +144,7 @@ switch ($action) {
         <div class="col-md-4"><?= form_input('costo_final','Costo final', '', ['type'=>'number','step'=>'0.01','min'=>'0']) ?></div>
         <div class="col-md-4"><?= form_input('compromiso_pago','Pago periódico','0',['type'=>'number','step'=>'0.01','min'=>'0','required'=>true]) ?></div>
         <div class="col-md-4"><?= form_input('periodo_pago','Periodo (ej. semanal)') ?></div>
-        <div class="col-md-4"><?= form_input('estatus','Estatus','activo') ?></div>
+        <div class="col-md-4"><?= form_input('estatus','Estatus','ACTIVO') ?></div>
 
         <div class="col-12 d-grid mt-3">
           <button class="btn btn-primary">Guardar contrato</button>
@@ -143,8 +161,10 @@ switch ($action) {
         const b=parseFloat(base.value)||0, d=parseFloat(desc.value)||0;
         fin.value=(b-d).toFixed(2);
       }
-      base.addEventListener('input',recalc);
-      desc.addEventListener('input',recalc);
+      if (base && desc) {
+        base.addEventListener('input',recalc);
+        desc.addEventListener('input',recalc);
+      }
     });
     </script>
     <?php
@@ -152,6 +172,9 @@ switch ($action) {
     break;
 
   case 'guardar':
+    if ($_SERVER['REQUEST_METHOD'] !== 'POST') redirect('contratos.listar');
+    try { csrf_verify(); } catch (RuntimeException $e) { $_SESSION['_alerts'] = "<div class='alert alert-danger'>Sesión inválida.</div>"; redirect('contratos.listar'); }
+
     try {
       db()->beginTransaction();
 
@@ -169,9 +192,11 @@ switch ($action) {
 
       q("INSERT INTO titular_dom (id_titular, id_domicilio) VALUES (?,?)", [$id_titular, $id_domicilio]);
 
+      $estatus = __contrato_estatus_normalizado($_POST['estatus'] ?? 'ACTIVO');
+
       q("INSERT INTO futuro_contratos (tipo_contrato,tipo_pago,costo_contrato,descuento,costo_final,periodo_pago,compromiso_pago,estatus,porc_promotor,porc_jefe_cuad,porc_lider,porc_empresa)
-         VALUES (?,?,?,?,?,?,?,'activo',25,15,10,50)", [
-        $_POST['tipo_contrato'], $_POST['tipo_pago'], $_POST['costo_contrato'], $_POST['descuento'], $_POST['costo_final'], $_POST['periodo_pago'], $_POST['compromiso_pago']
+         VALUES (?,?,?,?,?,?,?, ?,25,15,10,50)", [
+        $_POST['tipo_contrato'], $_POST['tipo_pago'], $_POST['costo_contrato'], $_POST['descuento'], $_POST['costo_final'], $_POST['periodo_pago'], $_POST['compromiso_pago'], $estatus
       ]);
       $id_contrato = (int)db()->lastInsertId();
 
@@ -207,6 +232,7 @@ switch ($action) {
     ob_start(); ?>
     <h1 class="h4 mb-3">Editar contrato #<?= $idc ?></h1>
     <form method="post" action="?r=contratos.actualizar&id_contrato=<?= $idc ?>">
+      <?= csrf_field() ?>
       <div class="row g-3">
 
         <h5>Datos del Titular</h5>
@@ -232,7 +258,7 @@ switch ($action) {
         <div class="col-md-4"><?= form_input('costo_final','Costo final',$c['costo_final'],['type'=>'number','step'=>'0.01']) ?></div>
         <div class="col-md-4"><?= form_input('compromiso_pago','Pago periódico',$c['compromiso_pago'],['type'=>'number','step'=>'0.01']) ?></div>
         <div class="col-md-4"><?= form_input('periodo_pago','Periodo',$c['periodo_pago']) ?></div>
-        <div class="col-md-4"><?= form_input('estatus','Estatus',$c['estatus']) ?></div>
+        <div class="col-md-4"><?= form_input('estatus','Estatus', __contrato_estatus_normalizado($c['estatus'] ?? 'ACTIVO')) ?></div>
 
         <h5 class="mt-4">Promotor</h5>
         <div class="col-md-6">
@@ -257,12 +283,17 @@ switch ($action) {
     break;
 
   case 'actualizar':
+    if ($_SERVER['REQUEST_METHOD'] !== 'POST') redirect('contratos.listar');
+    try { csrf_verify(); } catch (RuntimeException $e) { $_SESSION['_alerts'] = "<div class='alert alert-danger'>Sesión inválida.</div>"; redirect('contratos.listar'); }
+
     $idc = (int)($_GET['id_contrato'] ?? 0);
     $id_promotor = (int)($_POST['id_promotor'] ?? 0);
     if ($id_promotor <= 0) {
       $_SESSION['_alerts'] = "<div class='alert alert-danger'>Selecciona un promotor válido.</div>";
       redirect("contratos.editar&id_contrato={$idc}");
     }
+
+    $estatus = __contrato_estatus_normalizado($_POST['estatus'] ?? 'ACTIVO');
 
     try {
       db()->beginTransaction();
@@ -274,7 +305,7 @@ switch ($action) {
         ]);
         q("UPDATE domicilios d
            JOIN titular_dom td ON td.id_domicilio = d.id_domicilio
-           SET d.municipio=?, d.colonia=?, d.calle=?, d.num_ext=?, d.num_int=?, 
+           SET d.municipio=?, d.colonia=?, d.calle=?, d.num_ext=?, d.num_int=?,
                d.entre_calle1=?, d.entre_calle2=?, d.notas=?
            WHERE td.id_titular=?", [
           $_POST['municipio'], $_POST['colonia'], $_POST['calle'], $_POST['num_ext'], $_POST['num_int'],
@@ -283,7 +314,7 @@ switch ($action) {
       }
 
       q("UPDATE futuro_contratos SET tipo_contrato=?, tipo_pago=?, costo_contrato=?, descuento=?, costo_final=?, periodo_pago=?, compromiso_pago=?, estatus=? WHERE id_contrato=?", [
-        $_POST['tipo_contrato'], $_POST['tipo_pago'], $_POST['costo_contrato'], $_POST['descuento'], $_POST['costo_final'], $_POST['periodo_pago'], $_POST['compromiso_pago'], $_POST['estatus'], $idc
+        $_POST['tipo_contrato'], $_POST['tipo_pago'], $_POST['costo_contrato'], $_POST['descuento'], $_POST['costo_final'], $_POST['periodo_pago'], $_POST['compromiso_pago'], $estatus, $idc
       ]);
 
       q("INSERT INTO futuro_contrato_vendedor (id_contrato,id_personal) VALUES (?,?)", [$idc, $id_promotor]);
@@ -291,12 +322,31 @@ switch ($action) {
       db()->commit();
 
       $_SESSION['_alerts'] = "<div class='alert alert-success'>Contrato actualizado correctamente.</div>";
-      redirect("contratos.ver&id_contrato={$idc}");
+      redirect("contratos.listar&id_contrato={$idc}");
     } catch (Exception $e) {
       if (db()->inTransaction()) db()->rollBack();
       $_SESSION['_alerts'] = "<div class='alert alert-danger'>Error: ".$e->getMessage()."</div>";
       redirect("contratos.editar&id_contrato={$idc}");
     }
+    break;
+
+  case 'eliminar':
+    if ($_SERVER['REQUEST_METHOD'] !== 'POST') redirect('contratos.listar');
+    try { csrf_verify(); } catch (RuntimeException $e) { $_SESSION['_alerts'] = "<div class='alert alert-danger'>Sesión inválida.</div>"; redirect('contratos.listar'); }
+
+    $idc = (int)($_GET['id_contrato'] ?? 0);
+    if ($idc <= 0) redirect('contratos.listar');
+
+    $c = qone("SELECT id_contrato, estatus FROM futuro_contratos WHERE id_contrato=?", [$idc]);
+    if (!$c) { $_SESSION['_alerts']="<div class='alert alert-warning'>Contrato no encontrado.</div>"; redirect('contratos.listar'); }
+
+    try {
+      q("UPDATE futuro_contratos SET estatus='INACTIVO' WHERE id_contrato=?", [$idc]);
+      $_SESSION['_alerts'] = "<div class='alert alert-success'>Contrato #{$idc} desactivado.</div>";
+    } catch (Exception $e) {
+      $_SESSION['_alerts'] = "<div class='alert alert-danger'>No se pudo desactivar el contrato.</div>";
+    }
+    redirect('contratos.listar');
     break;
 
   case 'ver':
@@ -365,7 +415,7 @@ switch ($action) {
       <div class="text-center mt-4 no-print">
         <a class="btn btn-danger" href="?r=contratos.pdf&id_contrato=<?= $idc ?>">📄 Descargar PDF</a>
         <button class="btn btn-primary" onclick="window.print()">🖨️ Imprimir</button>
-        <a href="?r=contratos.listar" class="btn btn-secondary">Volver</a>
+        <button type="button" class="btn btn-secondary" onclick="history.back()">Volver</button>
       </div>
     </div>
     <style>@media print{.no-print{display:none;}}</style>
