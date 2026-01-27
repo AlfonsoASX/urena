@@ -46,6 +46,24 @@ function __contrato_estatus_normalizado($v): string {
   return $s;
 }
 
+function __post_str($k, $def=''): string {
+  $v = $_POST[$k] ?? $def;
+  if (is_array($v)) return $def;
+  return trim((string)$v);
+}
+
+function __post_float($k, $def=0.0): float {
+  $v = $_POST[$k] ?? $def;
+  if ($v === '' || $v === null) return (float)$def;
+  return (float)$v;
+}
+
+function __post_int($k, $def=0): int {
+  $v = $_POST[$k] ?? $def;
+  if ($v === '' || $v === null) return (int)$def;
+  return (int)$v;
+}
+
 switch ($action) {
 
   case 'listar':
@@ -85,10 +103,10 @@ switch ($action) {
         <?php foreach ($rows as $r): ?>
           <tr>
             <td><code><?= e($r['id_contrato']) ?></code></td>
-            <td><?= e(trim($r['nombre'].' '.$r['apellido_p'].' '.$r['apellido_m'])) ?></td>
-            <td><?= e("{$r['calle']} #{$r['num_ext']}".($r['num_int'] ? " Int. {$r['num_int']}" : "").", {$r['colonia']}, {$r['municipio']}") ?></td>
-            <td>$<?= number_format((float)$r['costo_final'], 2) ?></td>
-            <td><span class="badge bg-<?= ($r['estatus']==='ACTIVO')?'success':'secondary' ?>"><?= e($r['estatus']) ?></span></td>
+            <td><?= e(trim(($r['nombre'] ?? '').' '.($r['apellido_p'] ?? '').' '.($r['apellido_m'] ?? ''))) ?></td>
+            <td><?= e(trim(($r['calle'] ?? '')." #".($r['num_ext'] ?? '').(($r['num_int'] ?? '') ? " Int. ".$r['num_int'] : "").", ".($r['colonia'] ?? '').", ".($r['municipio'] ?? ''))) ?></td>
+            <td>$<?= number_format((float)($r['costo_final'] ?? 0), 2) ?></td>
+            <td><span class="badge bg-<?= (($r['estatus'] ?? 'ACTIVO')==='ACTIVO')?'success':'secondary' ?>"><?= e($r['estatus'] ?? 'ACTIVO') ?></span></td>
             <td class="d-flex flex-wrap gap-2">
               <a href="?r=contratos.editar&id_contrato=<?= (int)$r['id_contrato'] ?>" class="btn btn-sm btn-outline-primary">✏️ Editar</a>
               <a href="?r=contratos.ver&id_contrato=<?= (int)$r['id_contrato'] ?>" class="btn btn-sm btn-outline-secondary">👁️ Ver</a>
@@ -114,37 +132,38 @@ switch ($action) {
     break;
 
   case 'nuevo':
+    $estatus_opts = ['ACTIVO' => 'ACTIVO', 'INACTIVO' => 'INACTIVO'];
     ob_start(); ?>
     <h1 class="h4 mb-3">Nuevo contrato</h1>
 
     <form method="post" action="?r=contratos.guardar">
       <?= csrf_field() ?>
+      <input type="hidden" name="municipio" value="León">
       <div class="row g-3">
 
-        <h5 class="mt-3">Datos del Titular</h5>
-        <div class="col-md-4"><?= form_input('nombre','Nombre') ?></div>
-        <div class="col-md-4"><?= form_input('apellido_p','Apellido paterno') ?></div>
-        <div class="col-md-4"><?= form_input('apellido_m','Apellido materno') ?></div>
+        <h5 class="mt-2">Datos del Titular</h5>
+        <div class="col-md-6"><?= form_input('nombre','Nombre','', ['required'=>true,'maxlength'=>50]) ?></div>
+        <div class="col-md-3"><?= form_input('apellido_p','Apellido paterno','', ['maxlength'=>50]) ?></div>
+        <div class="col-md-3"><?= form_input('apellido_m','Apellido materno','', ['maxlength'=>50]) ?></div>
 
-        <h5 class="mt-4">Domicilio</h5>
-        <div class="col-md-6"><?= form_input('calle','Calle') ?></div>
-        <div class="col-md-2"><?= form_input('num_ext','Núm. exterior') ?></div>
-        <div class="col-md-2"><?= form_input('num_int','Núm. interior (opcional)') ?></div>
-        <div class="col-md-4"><?= form_input('colonia','Colonia') ?></div>
-        <div class="col-md-4"><?= form_input('municipio','Municipio') ?></div>
-        <div class="col-md-6"><?= form_input('entre_calle1','Entre calle 1') ?></div>
-        <div class="col-md-6"><?= form_input('entre_calle2','Entre calle 2') ?></div>
-        <div class="col-12"><?= form_input('notas','Notas del domicilio') ?></div>
+        <h5 class="mt-4">Domicilio (opcional)</h5>
+        <div class="col-md-6"><?= form_input('calle','Calle','', ['maxlength'=>50]) ?></div>
+        <div class="col-md-2"><?= form_input('num_ext','Núm. exterior','', ['type'=>'number','min'=>'0']) ?></div>
+        <div class="col-md-2"><?= form_input('num_int','Núm. interior (opcional)','', ['maxlength'=>5]) ?></div>
+        <div class="col-md-4"><?= form_input('colonia','Colonia','', ['maxlength'=>50]) ?></div>
+        <div class="col-md-6"><?= form_input('entre_calle1','Entre calle 1','', ['maxlength'=>50]) ?></div>
+        <div class="col-md-6"><?= form_input('entre_calle2','Entre calle 2','', ['maxlength'=>50]) ?></div>
+        <div class="col-12"><?= form_input('notas','Notas del domicilio','', ['maxlength'=>250]) ?></div>
 
-        <h5 class="mt-4">Datos del Contrato</h5>
-        <div class="col-md-4"><?= form_input('tipo_contrato','Tipo de contrato / Paquete') ?></div>
-        <div class="col-md-4"><?= form_input('tipo_pago','Tipo de pago (semanal, quincenal, etc.)') ?></div>
-        <div class="col-md-4"><?= form_input('costo_contrato','Costo base', '', ['type'=>'number','step'=>'0.01','min'=>'0']) ?></div>
+        <h5 class="mt-4">Datos del Contrato (opcional)</h5>
+        <div class="col-md-4"><?= form_input('tipo_contrato','Tipo de contrato / Paquete','', ['maxlength'=>50]) ?></div>
+        <div class="col-md-4"><?= form_input('tipo_pago','Tipo de pago (semanal, quincenal, etc.)','', ['maxlength'=>20]) ?></div>
+        <div class="col-md-4"><?= form_input('costo_contrato','Costo base', '0', ['type'=>'number','step'=>'0.01','min'=>'0']) ?></div>
         <div class="col-md-4"><?= form_input('descuento','Descuento', '0', ['type'=>'number','step'=>'0.01','min'=>'0']) ?></div>
-        <div class="col-md-4"><?= form_input('costo_final','Costo final', '', ['type'=>'number','step'=>'0.01','min'=>'0']) ?></div>
-        <div class="col-md-4"><?= form_input('compromiso_pago','Pago periódico','0',['type'=>'number','step'=>'0.01','min'=>'0','required'=>true]) ?></div>
-        <div class="col-md-4"><?= form_input('periodo_pago','Periodo (ej. semanal)') ?></div>
-        <div class="col-md-4"><?= form_input('estatus','Estatus','ACTIVO') ?></div>
+        <div class="col-md-4"><?= form_input('costo_final','Costo final', '0', ['type'=>'number','step'=>'0.01','min'=>'0']) ?></div>
+        <div class="col-md-4"><?= form_input('compromiso_pago','Pago periódico','0',['type'=>'number','step'=>'0.01','min'=>'0']) ?></div>
+        <div class="col-md-4"><?= form_input('periodo_pago','Periodo (ej. semanal)','', ['maxlength'=>10]) ?></div>
+        <div class="col-md-4"><?= form_select('estatus','Estatus',$estatus_opts,'ACTIVO',['class'=>'form-select']) ?></div>
 
         <div class="col-12 d-grid mt-3">
           <button class="btn btn-primary">Guardar contrato</button>
@@ -158,8 +177,8 @@ switch ($action) {
       const desc=document.querySelector('[name="descuento"]');
       const fin=document.querySelector('[name="costo_final"]');
       function recalc(){
-        const b=parseFloat(base.value)||0, d=parseFloat(desc.value)||0;
-        fin.value=(b-d).toFixed(2);
+        const b=parseFloat(base?.value)||0, d=parseFloat(desc?.value)||0;
+        if(fin) fin.value=(b-d).toFixed(2);
       }
       if (base && desc) {
         base.addEventListener('input',recalc);
@@ -175,28 +194,53 @@ switch ($action) {
     if ($_SERVER['REQUEST_METHOD'] !== 'POST') redirect('contratos.listar');
     try { csrf_verify(); } catch (RuntimeException $e) { $_SESSION['_alerts'] = "<div class='alert alert-danger'>Sesión inválida.</div>"; redirect('contratos.listar'); }
 
+    $nombre = __post_str('nombre','');
+    if ($nombre === '') {
+      $_SESSION['_alerts'] = "<div class='alert alert-danger'>El nombre del titular es obligatorio.</div>";
+      redirect('contratos.nuevo');
+    }
+
     try {
       db()->beginTransaction();
 
+      $apellido_p = __post_str('apellido_p','');
+      $apellido_m = __post_str('apellido_m','');
+
       q("INSERT INTO titulares (nombre, apellido_p, apellido_m) VALUES (?,?,?)", [
-        $_POST['nombre'], $_POST['apellido_p'], $_POST['apellido_m']
+        $nombre, $apellido_p, $apellido_m
       ]);
       $id_titular = (int)db()->lastInsertId();
 
+      $municipio = 'León';
+      $colonia = __post_str('colonia','');
+      $calle = __post_str('calle','');
+      $num_ext = __post_int('num_ext',0);
+      $num_int = __post_str('num_int','');
+      $entre_calle1 = __post_str('entre_calle1','');
+      $entre_calle2 = __post_str('entre_calle2','');
+      $notas = __post_str('notas','');
+
       q("INSERT INTO domicilios (municipio,colonia,calle,num_ext,num_int,entre_calle1,entre_calle2,tipo_dom,notas)
          VALUES (?,?,?,?,?,?,?,?,?)", [
-        $_POST['municipio'], $_POST['colonia'], $_POST['calle'], $_POST['num_ext'], $_POST['num_int'],
-        $_POST['entre_calle1'], $_POST['entre_calle2'], 'particular', $_POST['notas']
+        $municipio, $colonia, $calle, $num_ext, $num_int,
+        $entre_calle1, $entre_calle2, 'particular', $notas
       ]);
       $id_domicilio = (int)db()->lastInsertId();
 
       q("INSERT INTO titular_dom (id_titular, id_domicilio) VALUES (?,?)", [$id_titular, $id_domicilio]);
 
+      $tipo_contrato = __post_str('tipo_contrato','');
+      $tipo_pago = __post_str('tipo_pago','');
+      $costo_contrato = __post_float('costo_contrato', 0);
+      $descuento = __post_float('descuento', 0);
+      $costo_final = __post_float('costo_final', 0);
+      $periodo_pago = __post_str('periodo_pago','');
+      $compromiso_pago = __post_float('compromiso_pago', 0);
       $estatus = __contrato_estatus_normalizado($_POST['estatus'] ?? 'ACTIVO');
 
       q("INSERT INTO futuro_contratos (tipo_contrato,tipo_pago,costo_contrato,descuento,costo_final,periodo_pago,compromiso_pago,estatus,porc_promotor,porc_jefe_cuad,porc_lider,porc_empresa)
          VALUES (?,?,?,?,?,?,?, ?,25,15,10,50)", [
-        $_POST['tipo_contrato'], $_POST['tipo_pago'], $_POST['costo_contrato'], $_POST['descuento'], $_POST['costo_final'], $_POST['periodo_pago'], $_POST['compromiso_pago'], $estatus
+        $tipo_contrato, $tipo_pago, $costo_contrato, $descuento, $costo_final, $periodo_pago, $compromiso_pago, $estatus
       ]);
       $id_contrato = (int)db()->lastInsertId();
 
@@ -228,37 +272,38 @@ switch ($action) {
 
     $promotores = __personal_activo();
     $id_promotor_actual = __vendedor_actual_id($idc);
+    $estatus_opts = ['ACTIVO' => 'ACTIVO', 'INACTIVO' => 'INACTIVO'];
 
     ob_start(); ?>
     <h1 class="h4 mb-3">Editar contrato #<?= $idc ?></h1>
     <form method="post" action="?r=contratos.actualizar&id_contrato=<?= $idc ?>">
       <?= csrf_field() ?>
+      <input type="hidden" name="municipio" value="León">
       <div class="row g-3">
 
         <h5>Datos del Titular</h5>
-        <div class="col-md-4"><?= form_input('nombre','Nombre',$c['nombre']) ?></div>
-        <div class="col-md-4"><?= form_input('apellido_p','Apellido paterno',$c['apellido_p']) ?></div>
-        <div class="col-md-4"><?= form_input('apellido_m','Apellido materno',$c['apellido_m']) ?></div>
+        <div class="col-md-6"><?= form_input('nombre','Nombre',$c['nombre'] ?? '', ['required'=>true,'maxlength'=>50]) ?></div>
+        <div class="col-md-3"><?= form_input('apellido_p','Apellido paterno',$c['apellido_p'] ?? '', ['maxlength'=>50]) ?></div>
+        <div class="col-md-3"><?= form_input('apellido_m','Apellido materno',$c['apellido_m'] ?? '', ['maxlength'=>50]) ?></div>
 
-        <h5 class="mt-4">Domicilio</h5>
-        <div class="col-md-6"><?= form_input('calle','Calle',$c['calle']) ?></div>
-        <div class="col-md-2"><?= form_input('num_ext','Núm. exterior',$c['num_ext']) ?></div>
-        <div class="col-md-2"><?= form_input('num_int','Núm. interior (opcional)',$c['num_int']) ?></div>
-        <div class="col-md-4"><?= form_input('colonia','Colonia',$c['colonia']) ?></div>
-        <div class="col-md-4"><?= form_input('municipio','Municipio',$c['municipio']) ?></div>
-        <div class="col-md-6"><?= form_input('entre_calle1','Entre calle 1',$c['entre_calle1']) ?></div>
-        <div class="col-md-6"><?= form_input('entre_calle2','Entre calle 2',$c['entre_calle2']) ?></div>
-        <div class="col-12"><?= form_input('notas','Notas del domicilio',$c['notas']) ?></div>
+        <h5 class="mt-4">Domicilio (opcional)</h5>
+        <div class="col-md-6"><?= form_input('calle','Calle',$c['calle'] ?? '', ['maxlength'=>50]) ?></div>
+        <div class="col-md-2"><?= form_input('num_ext','Núm. exterior',$c['num_ext'] ?? 0, ['type'=>'number','min'=>'0']) ?></div>
+        <div class="col-md-2"><?= form_input('num_int','Núm. interior (opcional)',$c['num_int'] ?? '', ['maxlength'=>5]) ?></div>
+        <div class="col-md-4"><?= form_input('colonia','Colonia',$c['colonia'] ?? '', ['maxlength'=>50]) ?></div>
+        <div class="col-md-6"><?= form_input('entre_calle1','Entre calle 1',$c['entre_calle1'] ?? '', ['maxlength'=>50]) ?></div>
+        <div class="col-md-6"><?= form_input('entre_calle2','Entre calle 2',$c['entre_calle2'] ?? '', ['maxlength'=>50]) ?></div>
+        <div class="col-12"><?= form_input('notas','Notas del domicilio',$c['notas'] ?? '', ['maxlength'=>250]) ?></div>
 
-        <h5 class="mt-4">Datos del Contrato</h5>
-        <div class="col-md-4"><?= form_input('tipo_contrato','Tipo de contrato',$c['tipo_contrato']) ?></div>
-        <div class="col-md-4"><?= form_input('tipo_pago','Tipo de pago',$c['tipo_pago']) ?></div>
-        <div class="col-md-4"><?= form_input('costo_contrato','Costo base',$c['costo_contrato'],['type'=>'number','step'=>'0.01']) ?></div>
-        <div class="col-md-4"><?= form_input('descuento','Descuento',$c['descuento'],['type'=>'number','step'=>'0.01']) ?></div>
-        <div class="col-md-4"><?= form_input('costo_final','Costo final',$c['costo_final'],['type'=>'number','step'=>'0.01']) ?></div>
-        <div class="col-md-4"><?= form_input('compromiso_pago','Pago periódico',$c['compromiso_pago'],['type'=>'number','step'=>'0.01']) ?></div>
-        <div class="col-md-4"><?= form_input('periodo_pago','Periodo',$c['periodo_pago']) ?></div>
-        <div class="col-md-4"><?= form_input('estatus','Estatus', __contrato_estatus_normalizado($c['estatus'] ?? 'ACTIVO')) ?></div>
+        <h5 class="mt-4">Datos del Contrato (opcional)</h5>
+        <div class="col-md-4"><?= form_input('tipo_contrato','Tipo de contrato',$c['tipo_contrato'] ?? '', ['maxlength'=>50]) ?></div>
+        <div class="col-md-4"><?= form_input('tipo_pago','Tipo de pago',$c['tipo_pago'] ?? '', ['maxlength'=>20]) ?></div>
+        <div class="col-md-4"><?= form_input('costo_contrato','Costo base',$c['costo_contrato'] ?? 0,['type'=>'number','step'=>'0.01','min'=>'0']) ?></div>
+        <div class="col-md-4"><?= form_input('descuento','Descuento',$c['descuento'] ?? 0,['type'=>'number','step'=>'0.01','min'=>'0']) ?></div>
+        <div class="col-md-4"><?= form_input('costo_final','Costo final',$c['costo_final'] ?? 0,['type'=>'number','step'=>'0.01','min'=>'0']) ?></div>
+        <div class="col-md-4"><?= form_input('compromiso_pago','Pago periódico',$c['compromiso_pago'] ?? 0,['type'=>'number','step'=>'0.01','min'=>'0']) ?></div>
+        <div class="col-md-4"><?= form_input('periodo_pago','Periodo',$c['periodo_pago'] ?? '', ['maxlength'=>10]) ?></div>
+        <div class="col-md-4"><?= form_select('estatus','Estatus',$estatus_opts, __contrato_estatus_normalizado($c['estatus'] ?? 'ACTIVO'), ['class'=>'form-select']) ?></div>
 
         <h5 class="mt-4">Promotor</h5>
         <div class="col-md-6">
@@ -293,6 +338,12 @@ switch ($action) {
       redirect("contratos.editar&id_contrato={$idc}");
     }
 
+    $nombre = __post_str('nombre','');
+    if ($nombre === '') {
+      $_SESSION['_alerts'] = "<div class='alert alert-danger'>El nombre del titular es obligatorio.</div>";
+      redirect("contratos.editar&id_contrato={$idc}");
+    }
+
     $estatus = __contrato_estatus_normalizado($_POST['estatus'] ?? 'ACTIVO');
 
     try {
@@ -301,20 +352,39 @@ switch ($action) {
       $tc = qone("SELECT id_titular FROM titular_contrato WHERE id_contrato=?", [$idc]);
       if ($tc) {
         q("UPDATE titulares SET nombre=?, apellido_p=?, apellido_m=? WHERE id_titular=?", [
-          $_POST['nombre'], $_POST['apellido_p'], $_POST['apellido_m'], $tc['id_titular']
+          $nombre, __post_str('apellido_p',''), __post_str('apellido_m',''), $tc['id_titular']
         ]);
+
+        $municipio = 'León';
         q("UPDATE domicilios d
            JOIN titular_dom td ON td.id_domicilio = d.id_domicilio
            SET d.municipio=?, d.colonia=?, d.calle=?, d.num_ext=?, d.num_int=?,
                d.entre_calle1=?, d.entre_calle2=?, d.notas=?
            WHERE td.id_titular=?", [
-          $_POST['municipio'], $_POST['colonia'], $_POST['calle'], $_POST['num_ext'], $_POST['num_int'],
-          $_POST['entre_calle1'], $_POST['entre_calle2'], $_POST['notas'], $tc['id_titular']
+          $municipio,
+          __post_str('colonia',''),
+          __post_str('calle',''),
+          __post_int('num_ext',0),
+          __post_str('num_int',''),
+          __post_str('entre_calle1',''),
+          __post_str('entre_calle2',''),
+          __post_str('notas',''),
+          $tc['id_titular']
         ]);
       }
 
-      q("UPDATE futuro_contratos SET tipo_contrato=?, tipo_pago=?, costo_contrato=?, descuento=?, costo_final=?, periodo_pago=?, compromiso_pago=?, estatus=? WHERE id_contrato=?", [
-        $_POST['tipo_contrato'], $_POST['tipo_pago'], $_POST['costo_contrato'], $_POST['descuento'], $_POST['costo_final'], $_POST['periodo_pago'], $_POST['compromiso_pago'], $estatus, $idc
+      q("UPDATE futuro_contratos
+         SET tipo_contrato=?, tipo_pago=?, costo_contrato=?, descuento=?, costo_final=?, periodo_pago=?, compromiso_pago=?, estatus=?
+         WHERE id_contrato=?", [
+        __post_str('tipo_contrato',''),
+        __post_str('tipo_pago',''),
+        __post_float('costo_contrato',0),
+        __post_float('descuento',0),
+        __post_float('costo_final',0),
+        __post_str('periodo_pago',''),
+        __post_float('compromiso_pago',0),
+        $estatus,
+        $idc
       ]);
 
       q("INSERT INTO futuro_contrato_vendedor (id_contrato,id_personal) VALUES (?,?)", [$idc, $id_promotor]);
@@ -370,7 +440,7 @@ switch ($action) {
       <p class="text-end">Folio: <?= $idc ?>/<?= date('Y', strtotime($c['fecha_registro'] ?? 'now')) ?></p>
       <p>
         EL C. <strong><?= e(trim("{$c['nombre']} {$c['apellido_p']} {$c['apellido_m']}")) ?></strong>
-        con domicilio en <strong><?= e("{$c['calle']} #{$c['num_ext']}".($c['num_int'] ? " Int. {$c['num_int']}" : "")." {$c['colonia']} {$c['municipio']}") ?></strong>
+        con domicilio en <strong><?= e(trim("{$c['calle']} #{$c['num_ext']}".($c['num_int'] ? " Int. {$c['num_int']}" : "")." {$c['colonia']} {$c['municipio']}")) ?></strong>
         el siguiente paquete para cuando lo solicite, teniendo derecho a lo estipulado en las cláusulas siguientes que incluyen:
       </p>
 
