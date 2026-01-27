@@ -519,7 +519,7 @@ case 'gestion':
     <div class="card-body">
       <div class="d-flex justify-content-between align-items-center mb-3">
           <h1 class="h5 m-0">Gestión Contrato #<?= e($id_contrato) ?></h1>
-          <a href="?r=cobrador.contratos" class="btn btn-sm btn-outline-secondary">Volver</a>
+          <button type="button" class="btn btn-secondary" onclick="history.back()">Volver</button>
       </div>
 
       <form method="post" action="?r=cobrador.gestion&id_contrato=<?= urlencode($id_contrato) ?>" id="formGestion">
@@ -602,7 +602,7 @@ case 'pagos':
       </div>
     </div>
     <div>
-      <a href="?r=cobrador.contratos" class="btn btn-sm btn-outline-secondary">← Volver</a>
+              <button type="button" class="btn btn-secondary" onclick="history.back()">Volver</button>
     </div>
   </div>
 
@@ -772,14 +772,12 @@ case 'estado':
               <td><small><?= $m['fecha'] ? date('d/m/Y H:i', strtotime($m['fecha'])) : '—' ?></small></td>
               <td><small><?= $is_abono ? 'Pago' : 'Gestión' ?></small></td>
               <td><small class="font-monospace">#<?= str_pad((string)($m['folio'] ?? ''), 6, '0', STR_PAD_LEFT) ?></small></td>
-              <td class="text-end"><small>$<?= number_format((float)($m['monto'] ?? 0), 2) ?></small></td>
+              <td class="text-end"><small><?= $is_abono ? '$'.number_format((float)($m['monto'] ?? 0), 2) : '—' ?></small></td>
               <td class="text-end">
                 <small class="text-danger"><?= $is_abono ? '$'.number_format((float)($m['saldo'] ?? 0), 2) : '—' ?></small>
               </td>
               <td><small class="text-muted"><?= e($m['notas'] ?? '—') ?></small></td>
               <td><small class="text-muted"><?= e(trim((string)($m['responsable'] ?? '')) ?: '—') ?></small></td>
-
-
             </tr>
           <?php endforeach; ?>
 
@@ -938,8 +936,7 @@ case 'ticket':
           <button onclick="window.print();" class="btn btn-link w-100">
              🖨️ Imprimir en navegador
           </button>
-
-          <a href="?r=cobrador.contratos" class="btn btn-light w-100 mt-2">Volver al panel</a>
+          <button type="button" class="btn btn-secondary" onclick="history.back()">Volver</button>
       </div>
 
     </div>

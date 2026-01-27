@@ -141,11 +141,32 @@ switch ($action) {
   case 'nuevo':
     $estatus_opts = ['ACTIVO' => 'ACTIVO', 'INACTIVO' => 'INACTIVO'];
     
+    // Opciones para los selects solicitados
+    $tipo_contrato_opts = [
+        'SERVICIO COMPLETO' => 'SERVICIO COMPLETO',
+        'CREMACIÓN' => 'CREMACIÓN'
+    ];
+    
+    $tipo_pago_opts = [
+        'PARCIALIDADES' => 'PARCIALIDADES',
+        'CONTADO' => 'CONTADO'
+    ];
+    $periodo_pago_opts = [
+        'SEMANA' => 'SEMANA',
+        'QUINCENA' => 'QUINCENA',
+        'MES' => 'MES',
+        'N/A' => 'N/A'
+    ];
+
     $promociones = __promociones_activas();
     $promociones_opts = [];
     foreach($promociones as $p) {
         $promociones_opts[$p['id_mos_cat_com']] = $p['concepto'];
     }
+
+    // --- NUEVO: Obtener promotores para el alta ---
+    $promotores = __personal_activo();
+    // ----------------------------------------------
 
     ob_start(); ?>
     <h1 class="h4 mb-3">Nuevo contrato</h1>
@@ -170,19 +191,45 @@ switch ($action) {
         <div class="col-12"><?= form_input('notas','Notas del domicilio','', ['maxlength'=>250]) ?></div>
 
         <h5 class="mt-4">Datos del Contrato</h5>
-        <div class="col-md-4"><?= form_input('tipo_contrato','Tipo de contrato / Paquete','', ['maxlength'=>50]) ?></div>
+        
+        <div class="col-md-4">
+            <?= form_select('tipo_contrato','Tipo de contrato / Paquete', $tipo_contrato_opts, '', ['class'=>'form-select']) ?>
+        </div>
         
         <div class="col-md-4">
             <?= form_select('id_promocion', 'Promoción', [0 => '-- Sin promoción --'] + $promociones_opts, 0, ['class'=>'form-select']) ?>
         </div>
 
-        <div class="col-md-4"><?= form_input('tipo_pago','Tipo de pago (semanal, quincenal, etc.)','', ['maxlength'=>20]) ?></div>
+        <div class="col-md-4">
+            <?= form_select('tipo_pago','Tipo de pago', $tipo_pago_opts, 'PARCIALIDADES', ['class'=>'form-select']) ?>
+        </div>
+        
         <div class="col-md-4"><?= form_input('costo_contrato','Costo base', '0', ['type'=>'number','step'=>'0.01','min'=>'0']) ?></div>
         <div class="col-md-4"><?= form_input('descuento','Descuento', '0', ['type'=>'number','step'=>'0.01','min'=>'0']) ?></div>
         <div class="col-md-4"><?= form_input('costo_final','Costo final', '0', ['type'=>'number','step'=>'0.01','min'=>'0']) ?></div>
-        <div class="col-md-4"><?= form_input('compromiso_pago','Pago periódico','0',['type'=>'number','step'=>'0.01','min'=>'0']) ?></div>
-        <div class="col-md-4"><?= form_input('periodo_pago','Periodo (ej. semanal)','', ['maxlength'=>10]) ?></div>
+        
+        <div class="col-md-4">
+            <?= form_input('compromiso_pago','Pago periódico','100',['type'=>'number','step'=>'0.01','min'=>'0']) ?>
+        </div>
+        
+        <div class="col-md-4">
+            <?= form_select('periodo_pago','Periodo', $periodo_pago_opts, 'SEMANA', ['class'=>'form-select']) ?>
+        </div>
+        
         <div class="col-md-4"><?= form_select('estatus','Estatus',$estatus_opts,'ACTIVO',['class'=>'form-select']) ?></div>
+
+        <h5 class="mt-4">Promotor</h5>
+        <div class="col-md-6">
+          <label class="form-label">Promotor asignado</label>
+          <select name="id_promotor" class="form-select" required>
+            <option value="">-- Selecciona promotor --</option>
+            <?php foreach ($promotores as $p): ?>
+              <option value="<?= (int)$p['id_personal'] ?>">
+                <?= e($p['nombre']) ?>
+              </option>
+            <?php endforeach; ?>
+          </select>
+        </div>
 
         <div class="col-12 d-grid mt-3">
           <button class="btn btn-primary">Guardar contrato</button>
@@ -218,6 +265,14 @@ switch ($action) {
       $_SESSION['_alerts'] = "<div class='alert alert-danger'>El nombre del titular es obligatorio.</div>";
       redirect('contratos.nuevo');
     }
+
+    // --- NUEVO: Validar promotor antes de iniciar transacción ---
+    $id_promotor = (int)($_POST['id_promotor'] ?? 0);
+    if ($id_promotor <= 0) {
+      $_SESSION['_alerts'] = "<div class='alert alert-danger'>Debes seleccionar un promotor válido.</div>";
+      redirect('contratos.nuevo');
+    }
+    // ------------------------------------------------------------
 
     try {
       db()->beginTransaction();
@@ -270,6 +325,10 @@ switch ($action) {
           q("INSERT INTO futuro_cont_cat_com (id_contrato, id_mos_cat_com) VALUES (?,?)", [$id_contrato, $id_promocion]);
       }
 
+      // --- NUEVO: Guardar relación con promotor ---
+      q("INSERT INTO futuro_contrato_vendedor (id_contrato,id_personal) VALUES (?,?)", [$id_contrato, $id_promotor]);
+      // --------------------------------------------
+
       db()->commit();
 
       $_SESSION['_alerts'] = "<div class='alert alert-success'>Contrato #{$id_contrato} guardado correctamente.</div>";
@@ -307,6 +366,22 @@ switch ($action) {
     $id_promocion_sel = (int)($promo_actual['id_mos_cat_com'] ?? 0);
 
     $estatus_opts = ['ACTIVO' => 'ACTIVO', 'INACTIVO' => 'INACTIVO'];
+    
+    $tipo_contrato_opts = [
+        'SERVICIO COMPLETO' => 'SERVICIO COMPLETO',
+        'CREMACIÓN' => 'CREMACIÓN'
+    ];
+    
+    $tipo_pago_opts = [
+        'PARCIALIDADES' => 'PARCIALIDADES',
+        'CONTADO' => 'CONTADO'
+    ];
+    $periodo_pago_opts = [
+        'SEMANA' => 'SEMANA',
+        'QUINCENA' => 'QUINCENA',
+        'MES' => 'MES',
+        'N/A' => 'N/A'
+    ];
 
     ob_start(); ?>
     <h1 class="h4 mb-3">Editar contrato #<?= $idc ?></h1>
@@ -330,18 +405,31 @@ switch ($action) {
         <div class="col-12"><?= form_input('notas','Notas del domicilio',$c['notas'] ?? '', ['maxlength'=>250]) ?></div>
 
         <h5 class="mt-4">Datos del Contrato</h5>
-        <div class="col-md-4"><?= form_input('tipo_contrato','Tipo de contrato',$c['tipo_contrato'] ?? '', ['maxlength'=>50]) ?></div>
+        
+        <div class="col-md-4">
+            <?= form_select('tipo_contrato','Tipo de contrato', $tipo_contrato_opts, $c['tipo_contrato'] ?? '', ['class'=>'form-select']) ?>
+        </div>
         
         <div class="col-md-4">
             <?= form_select('id_promocion', 'Promoción', [0 => '-- Sin promoción --'] + $promociones_opts, $id_promocion_sel, ['class'=>'form-select']) ?>
         </div>
 
-        <div class="col-md-4"><?= form_input('tipo_pago','Tipo de pago',$c['tipo_pago'] ?? '', ['maxlength'=>20]) ?></div>
+        <div class="col-md-4">
+            <?= form_select('tipo_pago','Tipo de pago', $tipo_pago_opts, $c['tipo_pago'] ?? '', ['class'=>'form-select']) ?>
+        </div>
+        
         <div class="col-md-4"><?= form_input('costo_contrato','Costo base',$c['costo_contrato'] ?? 0,['type'=>'number','step'=>'0.01','min'=>'0']) ?></div>
         <div class="col-md-4"><?= form_input('descuento','Descuento',$c['descuento'] ?? 0,['type'=>'number','step'=>'0.01','min'=>'0']) ?></div>
         <div class="col-md-4"><?= form_input('costo_final','Costo final',$c['costo_final'] ?? 0,['type'=>'number','step'=>'0.01','min'=>'0']) ?></div>
-        <div class="col-md-4"><?= form_input('compromiso_pago','Pago periódico',$c['compromiso_pago'] ?? 0,['type'=>'number','step'=>'0.01','min'=>'0']) ?></div>
-        <div class="col-md-4"><?= form_input('periodo_pago','Periodo',$c['periodo_pago'] ?? '', ['maxlength'=>10]) ?></div>
+        
+        <div class="col-md-4">
+            <?= form_input('compromiso_pago','Pago periódico',$c['compromiso_pago'] ?? 0,['type'=>'number','step'=>'0.01','min'=>'0']) ?>
+        </div>
+        
+        <div class="col-md-4">
+            <?= form_select('periodo_pago','Periodo', $periodo_pago_opts, $c['periodo_pago'] ?? 'SEMANA', ['class'=>'form-select']) ?>
+        </div>
+        
         <div class="col-md-4"><?= form_select('estatus','Estatus',$estatus_opts, __contrato_estatus_normalizado($c['estatus'] ?? 'ACTIVO'), ['class'=>'form-select']) ?></div>
 
         <h5 class="mt-4">Promotor</h5>
