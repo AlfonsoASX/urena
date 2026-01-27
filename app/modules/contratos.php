@@ -8,6 +8,13 @@ function __personal_activo() {
                ORDER BY nombre ASC");
 }
 
+function __promociones_activas() {
+  return qall("SELECT id_mos_cat_com, codigo concepto 
+               FROM futuro_mostrar_catalogo_promociones 
+               WHERE estatus = 1 
+               ORDER BY concepto ASC");
+}
+
 function __vendedor_actual_id(int $id_contrato): int {
   $r = qone("SELECT id_personal FROM futuro_contrato_vendedor WHERE id_contrato=? ORDER BY id_cont_vend DESC LIMIT 1", [$id_contrato]);
   if (!$r) {
@@ -133,6 +140,13 @@ switch ($action) {
 
   case 'nuevo':
     $estatus_opts = ['ACTIVO' => 'ACTIVO', 'INACTIVO' => 'INACTIVO'];
+    
+    $promociones = __promociones_activas();
+    $promociones_opts = [];
+    foreach($promociones as $p) {
+        $promociones_opts[$p['id_mos_cat_com']] = $p['concepto'];
+    }
+
     ob_start(); ?>
     <h1 class="h4 mb-3">Nuevo contrato</h1>
 
@@ -146,17 +160,22 @@ switch ($action) {
         <div class="col-md-3"><?= form_input('apellido_p','Apellido paterno','', ['maxlength'=>50]) ?></div>
         <div class="col-md-3"><?= form_input('apellido_m','Apellido materno','', ['maxlength'=>50]) ?></div>
 
-        <h5 class="mt-4">Domicilio (opcional)</h5>
+        <h5 class="mt-4">Domicilio</h5>
         <div class="col-md-6"><?= form_input('calle','Calle','', ['maxlength'=>50]) ?></div>
         <div class="col-md-2"><?= form_input('num_ext','Núm. exterior','', ['type'=>'number','min'=>'0']) ?></div>
-        <div class="col-md-2"><?= form_input('num_int','Núm. interior (opcional)','', ['maxlength'=>5]) ?></div>
+        <div class="col-md-2"><?= form_input('num_int','Núm. interior','', ['maxlength'=>5]) ?></div>
         <div class="col-md-4"><?= form_input('colonia','Colonia','', ['maxlength'=>50]) ?></div>
         <div class="col-md-6"><?= form_input('entre_calle1','Entre calle 1','', ['maxlength'=>50]) ?></div>
         <div class="col-md-6"><?= form_input('entre_calle2','Entre calle 2','', ['maxlength'=>50]) ?></div>
         <div class="col-12"><?= form_input('notas','Notas del domicilio','', ['maxlength'=>250]) ?></div>
 
-        <h5 class="mt-4">Datos del Contrato (opcional)</h5>
+        <h5 class="mt-4">Datos del Contrato</h5>
         <div class="col-md-4"><?= form_input('tipo_contrato','Tipo de contrato / Paquete','', ['maxlength'=>50]) ?></div>
+        
+        <div class="col-md-4">
+            <?= form_select('id_promocion', 'Promoción', [0 => '-- Sin promoción --'] + $promociones_opts, 0, ['class'=>'form-select']) ?>
+        </div>
+
         <div class="col-md-4"><?= form_input('tipo_pago','Tipo de pago (semanal, quincenal, etc.)','', ['maxlength'=>20]) ?></div>
         <div class="col-md-4"><?= form_input('costo_contrato','Costo base', '0', ['type'=>'number','step'=>'0.01','min'=>'0']) ?></div>
         <div class="col-md-4"><?= form_input('descuento','Descuento', '0', ['type'=>'number','step'=>'0.01','min'=>'0']) ?></div>
@@ -221,7 +240,7 @@ switch ($action) {
       $notas = __post_str('notas','');
 
       q("INSERT INTO domicilios (municipio,colonia,calle,num_ext,num_int,entre_calle1,entre_calle2,tipo_dom,notas)
-         VALUES (?,?,?,?,?,?,?,?,?)", [
+          VALUES (?,?,?,?,?,?,?,?,?)", [
         $municipio, $colonia, $calle, $num_ext, $num_int,
         $entre_calle1, $entre_calle2, 'particular', $notas
       ]);
@@ -239,12 +258,17 @@ switch ($action) {
       $estatus = __contrato_estatus_normalizado($_POST['estatus'] ?? 'ACTIVO');
 
       q("INSERT INTO futuro_contratos (tipo_contrato,tipo_pago,costo_contrato,descuento,costo_final,periodo_pago,compromiso_pago,estatus,porc_promotor,porc_jefe_cuad,porc_lider,porc_empresa)
-         VALUES (?,?,?,?,?,?,?, ?,25,15,10,50)", [
+          VALUES (?,?,?,?,?,?,?, ?,25,15,10,50)", [
         $tipo_contrato, $tipo_pago, $costo_contrato, $descuento, $costo_final, $periodo_pago, $compromiso_pago, $estatus
       ]);
       $id_contrato = (int)db()->lastInsertId();
 
       q("INSERT INTO titular_contrato (id_titular,id_contrato) VALUES (?,?)", [$id_titular,$id_contrato]);
+
+      $id_promocion = __post_int('id_promocion', 0);
+      if ($id_promocion > 0) {
+          q("INSERT INTO futuro_cont_cat_com (id_contrato, id_mos_cat_com) VALUES (?,?)", [$id_contrato, $id_promocion]);
+      }
 
       db()->commit();
 
@@ -272,6 +296,16 @@ switch ($action) {
 
     $promotores = __personal_activo();
     $id_promotor_actual = __vendedor_actual_id($idc);
+    
+    $promociones = __promociones_activas();
+    $promociones_opts = [];
+    foreach($promociones as $p) {
+        $promociones_opts[$p['id_mos_cat_com']] = $p['concepto'];
+    }
+    
+    $promo_actual = qone("SELECT id_mos_cat_com FROM futuro_cont_cat_com WHERE id_contrato = ?", [$idc]);
+    $id_promocion_sel = (int)($promo_actual['id_mos_cat_com'] ?? 0);
+
     $estatus_opts = ['ACTIVO' => 'ACTIVO', 'INACTIVO' => 'INACTIVO'];
 
     ob_start(); ?>
@@ -286,17 +320,22 @@ switch ($action) {
         <div class="col-md-3"><?= form_input('apellido_p','Apellido paterno',$c['apellido_p'] ?? '', ['maxlength'=>50]) ?></div>
         <div class="col-md-3"><?= form_input('apellido_m','Apellido materno',$c['apellido_m'] ?? '', ['maxlength'=>50]) ?></div>
 
-        <h5 class="mt-4">Domicilio (opcional)</h5>
+        <h5 class="mt-4">Domicilio</h5>
         <div class="col-md-6"><?= form_input('calle','Calle',$c['calle'] ?? '', ['maxlength'=>50]) ?></div>
         <div class="col-md-2"><?= form_input('num_ext','Núm. exterior',$c['num_ext'] ?? 0, ['type'=>'number','min'=>'0']) ?></div>
-        <div class="col-md-2"><?= form_input('num_int','Núm. interior (opcional)',$c['num_int'] ?? '', ['maxlength'=>5]) ?></div>
+        <div class="col-md-2"><?= form_input('num_int','Núm. interior',$c['num_int'] ?? '', ['maxlength'=>5]) ?></div>
         <div class="col-md-4"><?= form_input('colonia','Colonia',$c['colonia'] ?? '', ['maxlength'=>50]) ?></div>
         <div class="col-md-6"><?= form_input('entre_calle1','Entre calle 1',$c['entre_calle1'] ?? '', ['maxlength'=>50]) ?></div>
         <div class="col-md-6"><?= form_input('entre_calle2','Entre calle 2',$c['entre_calle2'] ?? '', ['maxlength'=>50]) ?></div>
         <div class="col-12"><?= form_input('notas','Notas del domicilio',$c['notas'] ?? '', ['maxlength'=>250]) ?></div>
 
-        <h5 class="mt-4">Datos del Contrato (opcional)</h5>
+        <h5 class="mt-4">Datos del Contrato</h5>
         <div class="col-md-4"><?= form_input('tipo_contrato','Tipo de contrato',$c['tipo_contrato'] ?? '', ['maxlength'=>50]) ?></div>
+        
+        <div class="col-md-4">
+            <?= form_select('id_promocion', 'Promoción', [0 => '-- Sin promoción --'] + $promociones_opts, $id_promocion_sel, ['class'=>'form-select']) ?>
+        </div>
+
         <div class="col-md-4"><?= form_input('tipo_pago','Tipo de pago',$c['tipo_pago'] ?? '', ['maxlength'=>20]) ?></div>
         <div class="col-md-4"><?= form_input('costo_contrato','Costo base',$c['costo_contrato'] ?? 0,['type'=>'number','step'=>'0.01','min'=>'0']) ?></div>
         <div class="col-md-4"><?= form_input('descuento','Descuento',$c['descuento'] ?? 0,['type'=>'number','step'=>'0.01','min'=>'0']) ?></div>
@@ -387,6 +426,12 @@ switch ($action) {
         $idc
       ]);
 
+      $id_promocion = __post_int('id_promocion', 0);
+      q("DELETE FROM futuro_cont_cat_com WHERE id_contrato = ?", [$idc]);
+      if ($id_promocion > 0) {
+          q("INSERT INTO futuro_cont_cat_com (id_contrato, id_mos_cat_com) VALUES (?,?)", [$idc, $id_promocion]);
+      }
+
       q("INSERT INTO futuro_contrato_vendedor (id_contrato,id_personal) VALUES (?,?)", [$idc, $id_promotor]);
 
       db()->commit();
@@ -436,7 +481,10 @@ switch ($action) {
 
     ob_start(); ?>
     <div class="">
-      <h2 class="text-center mb-3">Contrato de Servicio de Cremación</h2>
+      <h2 class="text-center mb-3">
+        Contrato de Servicio<br>
+        <small class="text-muted fs-6"><?= e($c['tipo_contrato'] ?? '') ?></small>
+      </h2>
       <p class="text-end">Folio: <?= $idc ?>/<?= date('Y', strtotime($c['fecha_registro'] ?? 'now')) ?></p>
       <p>
         EL C. <strong><?= e(trim("{$c['nombre']} {$c['apellido_p']} {$c['apellido_m']}")) ?></strong>
@@ -516,11 +564,13 @@ switch ($action) {
       $anio_folio = date('Y', strtotime($c['fecha_registro'] ?? 'now'));
       $folio = $idc.'/'.$anio_folio;
       $fecha_contrato = __fecha_es($c['fecha_registro'] ?? null);
+      $tipo_contrato = htmlspecialchars($c['tipo_contrato'] ?? '', ENT_QUOTES, 'UTF-8');
 
       $html = '<html><head><meta charset="utf-8">
       <style>
         body{font-family: DejaVu Sans, Arial, sans-serif; font-size: 12px; line-height: 1.35;}
-        h2{margin:0 0 8px 0; text-align:center;}
+        h2{margin:0 0 4px 0; text-align:center;}
+        h3{margin:0 0 8px 0; text-align:center; font-weight:normal; color:#555; font-size:14px;}
         .folio{margin:0 0 10px 0; text-align:right;}
         ul{margin:8px 0 10px 18px;}
         .firmas{margin-top:40px; text-align:center;}
@@ -528,7 +578,10 @@ switch ($action) {
         .muted{color:#666;}
       </style></head><body>';
 
-      $html .= '<h2>Contrato de Servicio de Cremación</h2>';
+      $html .= '<h2>Contrato de Servicio</h2>';
+      if ($tipo_contrato) {
+          $html .= '<h3>'.$tipo_contrato.'</h3>';
+      }
       $html .= '<p class="folio">Folio: '.htmlspecialchars($folio,ENT_QUOTES,'UTF-8').'</p>';
       $html .= '<p>EL C. <strong>'.htmlspecialchars($titular,ENT_QUOTES,'UTF-8').'</strong> con Domicilio en <strong>'.htmlspecialchars($dom,ENT_QUOTES,'UTF-8').'</strong> el siguiente paquete para cuando lo solicite, teniendo derecho a lo estipulado en las cláusulas siguientes que incluyen:</p>';
 
