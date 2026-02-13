@@ -567,7 +567,8 @@ case 'pagos':
     redirect('cobrador.contratos');
   }
 
-  $c = qone("SELECT c.id_contrato, c.costo_final, t.titular
+  // 1. Obtenemos el descuento del contrato
+  $c = qone("SELECT c.id_contrato, c.costo_final, c.descuento, t.titular
              FROM futuro_contratos c
              LEFT JOIN vw_titular_contrato t ON t.id_contrato=c.id_contrato
              WHERE c.id_contrato=? LIMIT 1", [$id_contrato]);
@@ -585,8 +586,12 @@ case 'pagos':
   ", [$id_contrato]);
 
   $sum = qone("SELECT COALESCE(SUM(cant_abono),0) AS total_pagado FROM futuro_abonos WHERE id_contrato=?", [$id_contrato]);
+  
   $total_pagado = (float)($sum['total_pagado'] ?? 0);
-  $costo_final = (float)($c['costo_final'] ?? 0);
+  $costo_final  = (float)($c['costo_final'] ?? 0);
+  $descuento    = (float)($c['descuento'] ?? 0); 
+  
+  // Calculamos el saldo global actual restando el descuento
   $saldo_calc = $costo_final - $total_pagado;
   if ($saldo_calc < 0) $saldo_calc = 0;
 
@@ -597,12 +602,15 @@ case 'pagos':
       <div class="text-muted small">
         <span class="me-2"><strong>Titular:</strong> <?= e($c['titular'] ?? '—') ?></span>
         <span class="me-2"><strong>Costo:</strong> $<?= number_format($costo_final, 2) ?></span>
+        <?php if($descuento > 0): ?>
+            <span class="me-2 text-success"><strong>Desc:</strong> -$<?= number_format($descuento, 2) ?></span>
+        <?php endif; ?>
         <span class="me-2"><strong>Pagado:</strong> $<?= number_format($total_pagado, 2) ?></span>
-        <span><strong>Saldo:</strong> <span class="text-danger fw-semibold">$<?= number_format($saldo_calc, 2) ?></span></span>
+        <span><strong>Saldo Actual:</strong> <span class="text-danger fw-semibold">$<?= number_format($saldo_calc, 2) ?></span></span>
       </div>
     </div>
     <div>
-              <button type="button" class="btn btn-secondary" onclick="history.back()">Volver</button>
+      <button type="button" class="btn btn-secondary" onclick="history.back()">Volver</button>
     </div>
   </div>
 
@@ -615,17 +623,27 @@ case 'pagos':
               <th>Folio</th>
               <th>Fecha</th>
               <th class="text-end">Monto</th>
-              <th class="text-end">Saldo</th>
+              <th class="text-end">Saldo Restante</th>
               <th style="width:170px">Acciones</th>
             </tr>
           </thead>
           <tbody>
-          <?php foreach ($pagos as $p): ?>
+          <?php foreach ($pagos as $p): 
+            // 2. LÓGICA DEL DETALLE:
+            // Tomamos el saldo histórico guardado en el abono y le restamos el descuento del contrato
+            // para mostrar el saldo neto real en ese momento.
+            $saldo_fila = (float)$p['saldo'] - $descuento;
+            
+            // Evitamos negativos visuales si el descuento es muy grande o hay error de datos
+            if ($saldo_fila < 0) $saldo_fila = 0;
+          ?>
             <tr>
               <td><small class="font-monospace">#<?= str_pad((string)$p['id_abono'], 6, '0', STR_PAD_LEFT) ?></small></td>
               <td><small><?= $p['fecha_registro'] ? date('d/m/Y H:i', strtotime($p['fecha_registro'])) : '—' ?></small></td>
               <td class="text-end"><small>$<?= number_format((float)$p['cant_abono'], 2) ?></small></td>
-              <td class="text-end"><small class="text-danger">$<?= number_format((float)$p['saldo'], 2) ?></small></td>
+              
+              <td class="text-end"><small class="text-danger">$<?= number_format($saldo_fila, 2) ?></small></td>
+              
               <td>
                 <div class="btn-group btn-group-sm">
                   <a href="?r=cobrador.ticket&id_abono=<?= (int)$p['id_abono'] ?>" class="btn btn-outline-primary" title="Reimprimir ticket">
