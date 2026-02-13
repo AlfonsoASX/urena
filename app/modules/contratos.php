@@ -1,6 +1,15 @@
 <?php
 if (!user_has_role(['admin', 'vendedor', 'supervisor'])) redirect('auth.login');
 
+    function __nombre_mes(int $mes): string {
+  $meses = [
+    1 => 'enero', 2 => 'febrero', 3 => 'marzo', 4 => 'abril',
+    5 => 'mayo', 6 => 'junio', 7 => 'julio', 8 => 'agosto',
+    9 => 'septiembre', 10 => 'octubre', 11 => 'noviembre', 12 => 'diciembre'
+  ];
+  return $meses[(int)$mes] ?? '';
+}
+
 function __personal_activo() {
   return qall("SELECT id_personal, CONCAT(nombre,' ',apellido_p,' ',apellido_m) AS nombre
                FROM futuro_personal
@@ -49,7 +58,7 @@ function __fecha_es($fecha): string {
 
 function __contrato_estatus_normalizado($v): string {
   $s = strtoupper(trim((string)$v));
-  if (!in_array($s, ['ACTIVO','INACTIVO'], true)) return 'ACTIVO';
+  if (!in_array($s, ['ACTIVO','INACTIVO','USADO','PAGADO'], true)) return 'ACTIVO';
   return $s;
 }
 
@@ -73,7 +82,18 @@ function __post_int($k, $def=0): int {
 
 switch ($action) {
 
-  case 'listar':
+  case 'listar2':
+    $filtro = $_GET['filtro'] ?? 'activos';
+    
+    $mapa_estatus = [
+        'activos' => 'ACTIVO',
+        'usados'  => 'USADO',
+        'pagados' => 'PAGADO',
+        'bajas'   => 'INACTIVO'
+    ];
+    
+    $estatus_db = $mapa_estatus[$filtro] ?? 'ACTIVO';
+
     $rows = qall("
       SELECT c.id_contrato,
              t.nombre, t.apellido_p, t.apellido_m,
@@ -84,15 +104,38 @@ switch ($action) {
       LEFT JOIN titulares t ON t.id_titular = tc.id_titular
       LEFT JOIN titular_dom td ON td.id_titular = t.id_titular
       LEFT JOIN domicilios d ON d.id_domicilio = td.id_domicilio
-      WHERE c.estatus='ACTIVO'
+      WHERE c.estatus = ?
       ORDER BY c.id_contrato DESC
-    ");
+    ", [$estatus_db]);
 
     ob_start(); ?>
     <div class="d-flex justify-content-between align-items-center mb-3">
       <h1 class="h4 m-0">Contratos</h1>
       <a href="?r=contratos.nuevo" class="btn btn-primary btn-sm">➕ Nuevo contrato</a>
     </div>
+
+    <ul class="nav nav-tabs mb-3">
+      <li class="nav-item">
+        <a class="nav-link <?= ($filtro === 'activos') ? 'active' : '' ?>" href="?r=contratos.listar&filtro=activos">
+            TODOS
+        </a>
+      </li>
+      <li class="nav-item">
+        <a class="nav-link <?= ($filtro === 'usados') ? 'active' : '' ?>" href="?r=contratos.listar&filtro=usados">
+            YA SE USARON
+        </a>
+      </li>
+      <li class="nav-item">
+        <a class="nav-link <?= ($filtro === 'pagados') ? 'active' : '' ?>" href="?r=contratos.listar&filtro=pagados">
+            PAGADOS
+        </a>
+      </li>
+      <li class="nav-item">
+        <a class="nav-link <?= ($filtro === 'bajas') ? 'active link-secondary' : 'link-secondary' ?>" href="?r=contratos.listar&filtro=bajas">
+            BAJAS
+        </a>
+      </li>
+    </ul>
 
     <div class="table-responsive">
       <table class="table table-striped table-hover table-sm align-middle">
@@ -113,11 +156,28 @@ switch ($action) {
             <td><?= e(trim(($r['nombre'] ?? '').' '.($r['apellido_p'] ?? '').' '.($r['apellido_m'] ?? ''))) ?></td>
             <td><?= e(trim(($r['calle'] ?? '')." #".($r['num_ext'] ?? '').(($r['num_int'] ?? '') ? " Int. ".$r['num_int'] : "").", ".($r['colonia'] ?? '').", ".($r['municipio'] ?? ''))) ?></td>
             <td>$<?= number_format((float)($r['costo_final'] ?? 0), 2) ?></td>
-            <td><span class="badge bg-<?= (($r['estatus'] ?? 'ACTIVO')==='ACTIVO')?'success':'secondary' ?>"><?= e($r['estatus'] ?? 'ACTIVO') ?></span></td>
+            <td>
+                <?php
+                $bg = match($r['estatus'] ?? '') {
+                    'ACTIVO' => 'success',
+                    'PAGADO' => 'info',
+                    'USADO'  => 'primary',
+                    'INACTIVO' => 'secondary',
+                    default => 'secondary'
+                };
+                ?>
+                <span class="badge bg-<?= $bg ?>"><?= e($r['estatus'] ?? 'ACTIVO') ?></span>
+            </td>
             <td class="d-flex flex-wrap gap-2">
               <a href="?r=contratos.editar&id_contrato=<?= (int)$r['id_contrato'] ?>" class="btn btn-sm btn-outline-primary">✏️ Editar</a>
               <a href="?r=contratos.ver&id_contrato=<?= (int)$r['id_contrato'] ?>" class="btn btn-sm btn-outline-secondary">👁️ Ver</a>
               <a href="?r=contratos.pdf&id_contrato=<?= (int)$r['id_contrato'] ?>" class="btn btn-sm btn-outline-danger">📄 PDF</a>
+              
+              <?php if (($r['estatus'] ?? '') === 'PAGADO'): ?>
+                <a href="?r=contratos.titulo_pdf&id_contrato=<?= (int)$r['id_contrato'] ?>" target="_blank" class="btn btn-sm btn-warning" title="Imprimir Título de Propiedad">📜 Título</a>
+              <?php endif; ?>
+
+              <?php if (($r['estatus'] ?? '') !== 'INACTIVO'): ?>
               <form method="post" action="?r=contratos.eliminar&id_contrato=<?= (int)$r['id_contrato'] ?>" class="m-0 p-0 d-inline">
                 <?= csrf_field() ?>
                 <button class="btn btn-sm btn-outline-dark"
@@ -125,11 +185,12 @@ switch ($action) {
                   🗑️ Eliminar
                 </button>
               </form>
+              <?php endif; ?>
             </td>
           </tr>
         <?php endforeach; ?>
         <?php if (empty($rows)): ?>
-          <tr><td colspan="6" class="text-center text-muted">Sin contratos</td></tr>
+          <tr><td colspan="6" class="text-center text-muted p-4">No hay contratos en esta sección</td></tr>
         <?php endif; ?>
         </tbody>
       </table>
@@ -137,11 +198,165 @@ switch ($action) {
     <?php
     render('Contratos', ob_get_clean());
     break;
-
-  case 'nuevo':
-    $estatus_opts = ['ACTIVO' => 'ACTIVO', 'INACTIVO' => 'INACTIVO'];
+case 'listar':
+    $filtro = $_GET['filtro'] ?? 'activos';
     
-    // Opciones para los selects solicitados
+    $mapa_estatus = [
+        'activos' => 'ACTIVO',
+        'usados'  => 'USADO',
+        'pagados' => 'PAGADO',
+        'bajas'   => 'INACTIVO'
+    ];
+    
+    $estatus_db = $mapa_estatus[$filtro] ?? 'ACTIVO';
+
+    // Consulta de datos
+    $rows = qall("
+      SELECT c.id_contrato,
+             t.nombre, t.apellido_p, t.apellido_m,
+             d.calle, d.num_ext, d.num_int, d.colonia, d.municipio,
+             c.costo_final, c.estatus
+      FROM futuro_contratos c
+      LEFT JOIN titular_contrato tc ON tc.id_contrato = c.id_contrato
+      LEFT JOIN titulares t ON t.id_titular = tc.id_titular
+      LEFT JOIN titular_dom td ON td.id_titular = t.id_titular
+      LEFT JOIN domicilios d ON d.id_domicilio = td.id_domicilio
+      WHERE c.estatus = ?
+      ORDER BY c.id_contrato DESC
+    ", [$estatus_db]);
+
+    ob_start(); ?>
+    
+    <link rel="stylesheet" href="https://cdn.datatables.net/1.13.6/css/dataTables.bootstrap5.min.css">
+
+    <div class="d-flex justify-content-between align-items-center mb-3">
+      <h1 class="h4 m-0">Contratos</h1>
+      <a href="?r=contratos.nuevo" class="btn btn-primary btn-sm">➕ Nuevo contrato</a>
+    </div>
+
+    <ul class="nav nav-tabs mb-3">
+      <li class="nav-item">
+        <a class="nav-link <?= ($filtro === 'activos') ? 'active' : '' ?>" href="?r=contratos.listar&filtro=activos">TODOS</a>
+      </li>
+      <li class="nav-item">
+        <a class="nav-link <?= ($filtro === 'usados') ? 'active' : '' ?>" href="?r=contratos.listar&filtro=usados">YA SE USARON</a>
+      </li>
+      <li class="nav-item">
+        <a class="nav-link <?= ($filtro === 'pagados') ? 'active' : '' ?>" href="?r=contratos.listar&filtro=pagados">PAGADOS</a>
+      </li>
+      <li class="nav-item">
+        <a class="nav-link <?= ($filtro === 'bajas') ? 'active link-secondary' : 'link-secondary' ?>" href="?r=contratos.listar&filtro=bajas">BAJAS</a>
+      </li>
+    </ul>
+
+    <div class="card shadow-sm border-0">
+      <div class="card-body">
+        <div class="table-responsive">
+          <table id="tablaContratos" class="table table-striped table-hover table-sm align-middle" style="width:100%">
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Titular</th>
+                <th>Dirección</th>
+                <th>Costo final</th>
+                <th>Estatus</th>
+                <th class="text-end">Acciones</th>
+              </tr>
+            </thead>
+            <tbody>
+            <?php foreach ($rows as $r): ?>
+              <tr>
+                <td><code><?= e($r['id_contrato']) ?></code></td>
+                <td><?= e(trim(($r['nombre'] ?? '').' '.($r['apellido_p'] ?? '').' '.($r['apellido_m'] ?? ''))) ?></td>
+                <td><?= e(trim(($r['calle'] ?? '')." #".($r['num_ext'] ?? '').(($r['num_int'] ?? '') ? " Int. ".$r['num_int'] : "").", ".($r['colonia'] ?? '').", ".($r['municipio'] ?? ''))) ?></td>
+                <td>$<?= number_format((float)($r['costo_final'] ?? 0), 2) ?></td>
+                <td>
+                    <?php
+                    $bg = match($r['estatus'] ?? '') {
+                        'ACTIVO' => 'success',
+                        'PAGADO' => 'info',
+                        'USADO'  => 'primary',
+                        'INACTIVO' => 'secondary',
+                        default => 'secondary'
+                    };
+                    ?>
+                    <span class="badge bg-<?= $bg ?>"><?= e($r['estatus'] ?? 'ACTIVO') ?></span>
+                </td>
+                <td class="text-end">
+                  <div class="d-inline-flex gap-1">
+                      <a href="?r=contratos.editar&id_contrato=<?= (int)$r['id_contrato'] ?>" class="btn btn-sm btn-outline-primary" title="Editar">✏️</a>
+                      <a href="?r=contratos.ver&id_contrato=<?= (int)$r['id_contrato'] ?>" class="btn btn-sm btn-outline-secondary" title="Ver">👁️</a>
+                      <a href="?r=contratos.pdf&id_contrato=<?= (int)$r['id_contrato'] ?>" class="btn btn-sm btn-outline-danger" title="PDF">📄</a>
+                      
+                      <?php if (($r['estatus'] ?? '') === 'PAGADO'): ?>
+                        <a href="?r=contratos.titulo_pdf&id_contrato=<?= (int)$r['id_contrato'] ?>" target="_blank" class="btn btn-sm btn-warning" title="Imprimir Título">📜</a>
+                      <?php endif; ?>
+
+                      <?php if (($r['estatus'] ?? '') !== 'INACTIVO'): ?>
+                      <form method="post" action="?r=contratos.eliminar&id_contrato=<?= (int)$r['id_contrato'] ?>" class="m-0 p-0 d-inline" onsubmit="return confirm('¿Desactivar contrato #<?= (int)$r['id_contrato'] ?>?');">
+                        <?= csrf_field() ?>
+                        <button class="btn btn-sm btn-outline-dark" title="Eliminar/Baja">🗑️</button>
+                      </form>
+                      <?php endif; ?>
+                  </div>
+                </td>
+              </tr>
+            <?php endforeach; ?>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <script src="https://code.jquery.com/jquery-3.7.0.min.js"></script>
+    <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
+    <script src="https://cdn.datatables.net/1.13.6/js/dataTables.bootstrap5.min.js"></script>
+
+    <script>
+    $(document).ready(function() {
+        $('#tablaContratos').DataTable({
+            "language": {
+                "sProcessing":     "Procesando...",
+                "sLengthMenu":     "Mostrar _MENU_ registros",
+                "sZeroRecords":    "No se encontraron resultados",
+                "sEmptyTable":     "Ningún dato disponible en esta tabla",
+                "sInfo":           "Mostrando registros del _START_ al _END_ de un total de _TOTAL_ registros",
+                "sInfoEmpty":      "Mostrando registros del 0 al 0 de un total de 0 registros",
+                "sInfoFiltered":   "(filtrado de un total de _MAX_ registros)",
+                "sSearch":         "Buscar:",
+                "sInfoThousands":  ",",
+                "sLoadingRecords": "Cargando...",
+                "oPaginate": {
+                    "sFirst":    "Primero",
+                    "sLast":     "Último",
+                    "sNext":     "Siguiente",
+                    "sPrevious": "Anterior"
+                },
+                "oAria": {
+                    "sSortAscending":  ": Activar para ordenar la columna de manera ascendente",
+                    "sSortDescending": ": Activar para ordenar la columna de manera descendente"
+                }
+            },
+            "order": [[ 0, "desc" ]], // Ordenar por ID (columna 0) descendente
+            "pageLength": 25,         // Mostrar 25 registros por defecto
+            "columnDefs": [
+                { "orderable": false, "targets": 5 } // No permitir ordenar por la columna de acciones
+            ]
+        });
+    });
+    </script>
+
+    <?php
+    render('Contratos', ob_get_clean());
+    break;
+  case 'nuevo':
+    $estatus_opts = [
+        'ACTIVO'   => 'ACTIVO',
+        'PAGADO'   => 'PAGADO',
+        'USADO'    => 'YA SE USÓ',
+        'INACTIVO' => 'BAJA / INACTIVO'
+    ];
+    
     $tipo_contrato_opts = [
         'SERVICIO COMPLETO' => 'SERVICIO COMPLETO',
         'CREMACIÓN' => 'CREMACIÓN'
@@ -164,9 +379,7 @@ switch ($action) {
         $promociones_opts[$p['id_mos_cat_com']] = $p['concepto'];
     }
 
-    // --- NUEVO: Obtener promotores para el alta ---
     $promotores = __personal_activo();
-    // ----------------------------------------------
 
     ob_start(); ?>
     <h1 class="h4 mb-3">Nuevo contrato</h1>
@@ -204,7 +417,7 @@ switch ($action) {
             <?= form_select('tipo_pago','Tipo de pago', $tipo_pago_opts, 'PARCIALIDADES', ['class'=>'form-select']) ?>
         </div>
         
-        <div class="col-md-4"><?= form_input('costo_contrato','Costo base', '0', ['type'=>'number','step'=>'0.01','min'=>'0']) ?></div>
+        <div class="col-md-4"><?= form_input('costo_contrato','Costo base', '28900', ['type'=>'number','step'=>'0.01','min'=>'0']) ?></div>
         <div class="col-md-4"><?= form_input('descuento','Descuento', '0', ['type'=>'number','step'=>'0.01','min'=>'0']) ?></div>
         <div class="col-md-4"><?= form_input('costo_final','Costo final', '0', ['type'=>'number','step'=>'0.01','min'=>'0']) ?></div>
         
@@ -266,13 +479,11 @@ switch ($action) {
       redirect('contratos.nuevo');
     }
 
-    // --- NUEVO: Validar promotor antes de iniciar transacción ---
     $id_promotor = (int)($_POST['id_promotor'] ?? 0);
     if ($id_promotor <= 0) {
       $_SESSION['_alerts'] = "<div class='alert alert-danger'>Debes seleccionar un promotor válido.</div>";
       redirect('contratos.nuevo');
     }
-    // ------------------------------------------------------------
 
     try {
       db()->beginTransaction();
@@ -325,9 +536,7 @@ switch ($action) {
           q("INSERT INTO futuro_cont_cat_com (id_contrato, id_mos_cat_com) VALUES (?,?)", [$id_contrato, $id_promocion]);
       }
 
-      // --- NUEVO: Guardar relación con promotor ---
       q("INSERT INTO futuro_contrato_vendedor (id_contrato,id_personal) VALUES (?,?)", [$id_contrato, $id_promotor]);
-      // --------------------------------------------
 
       db()->commit();
 
@@ -365,7 +574,12 @@ switch ($action) {
     $promo_actual = qone("SELECT id_mos_cat_com FROM futuro_cont_cat_com WHERE id_contrato = ?", [$idc]);
     $id_promocion_sel = (int)($promo_actual['id_mos_cat_com'] ?? 0);
 
-    $estatus_opts = ['ACTIVO' => 'ACTIVO', 'INACTIVO' => 'INACTIVO'];
+    $estatus_opts = [
+        'ACTIVO'   => 'ACTIVO',
+        'PAGADO'   => 'PAGADO',
+        'USADO'    => 'YA SE USÓ',
+        'INACTIVO' => 'BAJA / INACTIVO'
+    ];
     
     $tipo_contrato_opts = [
         'SERVICIO COMPLETO' => 'SERVICIO COMPLETO',
@@ -712,6 +926,61 @@ switch ($action) {
       $_SESSION['_alerts'] = "<div class='alert alert-danger'>Error al generar PDF: ".$e->getMessage()."</div>";
       redirect("contratos.ver&id_contrato={$idc}");
     }
+    break;
+
+  case 'titulo_pdf':
+    $idc = (int)($_GET['id_contrato'] ?? 0);
+    $c = qone("
+      SELECT c.*, t.*
+      FROM futuro_contratos c
+      LEFT JOIN titular_contrato tc ON tc.id_contrato = c.id_contrato
+      LEFT JOIN titulares t ON t.id_titular = tc.id_titular
+      WHERE c.id_contrato = ?
+    ", [$idc]);
+    if (!$c) die("Contrato no encontrado");
+
+    require_once 'dompdf/autoload.inc.php';
+
+    $titular = mb_strtoupper(trim("{$c['nombre']} {$c['apellido_p']} {$c['apellido_m']}"), 'UTF-8');
+    $folio = $idc;
+    $dia = date('d');
+    $mes = strtoupper(__nombre_mes(date('m')));
+
+
+
+
+    $anio = date('Y');
+    // Usamos el id_contrato con padding como número de control
+    $num_control = str_pad($idc, 6, '0', STR_PAD_LEFT);
+
+    // Ajusta los valores de 'top' y 'left' para coincidir con tu formato preimpreso
+    $html = '<html><head><meta charset="utf-8">
+    <style>
+      @page { margin: 0; }
+      body { font-family: sans-serif; font-size: 12pt; }
+      .abs { position: absolute; }
+    </style></head><body>';
+
+    // Coordenadas aproximadas (Ajustar según impresión real)
+    // Nombre
+    $html .= '<div class="abs" style="top: 560px; left: 70px; width: 500px; text-align:center;">'.htmlspecialchars($titular).'</div>';
+    $html .= '<div class="abs" style="top: 590px; left: 480px;">'.htmlspecialchars($folio).'</div>';
+    $html .= '<div class="abs" style="top: 640px; left: 410px;">'.htmlspecialchars($dia).'</div>';
+    $html .= '<div class="abs" style="top: 640px; left: 480px;">'.htmlspecialchars($mes).'</div>';
+    $html .= '<div class="abs" style="top: 640px; left: 620px;">'.htmlspecialchars($anio).'</div>';
+    $html .= '<div class="abs" style="top: 715px; left: 630px;">'.htmlspecialchars($num_control).'</div>';
+
+    $html .= '</body></html>';
+
+    $dompdf = new \Dompdf\Dompdf();
+    $dompdf->loadHtml($html, 'UTF-8');
+    $dompdf->setPaper('letter', 'portrait');
+    $dompdf->render();
+
+    header('Content-Type: application/pdf');
+    header('Content-Disposition: inline; filename="Titulo_'.$idc.'.pdf"');
+    echo $dompdf->output();
+    exit;
     break;
 
   default:
