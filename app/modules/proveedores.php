@@ -34,19 +34,22 @@ function proveedores_ensure_schema() {
 
   // Refuerzos idempotentes (por si la tabla existía con menos columnas)
   $adds = [
-    "ALTER TABLE proveedores ADD COLUMN IF NOT EXISTS rfc VARCHAR(20) DEFAULT NULL",
-    "ALTER TABLE proveedores ADD COLUMN IF NOT EXISTS contacto VARCHAR(100) DEFAULT NULL",
-    "ALTER TABLE proveedores ADD COLUMN IF NOT EXISTS telefono VARCHAR(20) DEFAULT NULL",
-    "ALTER TABLE proveedores ADD COLUMN IF NOT EXISTS email VARCHAR(100) DEFAULT NULL",
-    "ALTER TABLE proveedores ADD COLUMN IF NOT EXISTS direccion VARCHAR(255) DEFAULT NULL",
-    "ALTER TABLE proveedores ADD COLUMN IF NOT EXISTS notas VARCHAR(255) DEFAULT NULL",
-    "ALTER TABLE proveedores ADD COLUMN IF NOT EXISTS estatus VARCHAR(10) NOT NULL DEFAULT 'activo'",
-    "ALTER TABLE proveedores ADD COLUMN IF NOT EXISTS eliminado TINYINT(1) NOT NULL DEFAULT 0",
-    "ALTER TABLE proveedores ADD COLUMN IF NOT EXISTS created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP",
-    "ALTER TABLE proveedores ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP",
+    'rfc' => "VARCHAR(20) DEFAULT NULL",
+    'contacto' => "VARCHAR(100) DEFAULT NULL",
+    'telefono' => "VARCHAR(20) DEFAULT NULL",
+    'email' => "VARCHAR(100) DEFAULT NULL",
+    'direccion' => "VARCHAR(255) DEFAULT NULL",
+    'notas' => "VARCHAR(255) DEFAULT NULL",
+    'estatus' => "VARCHAR(10) NOT NULL DEFAULT 'activo'",
+    'eliminado' => "TINYINT(1) NOT NULL DEFAULT 0",
+    'created_at' => "TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP",
+    'updated_at' => "TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP",
   ];
-  foreach ($adds as $sql) { try { q($sql); } catch (Exception $e) {} }
+  foreach ($adds as $column => $ddl) {
+    db_add_column_if_missing('proveedores', $column, $ddl);
+  }
 }
+db_register_schema_repair('proveedores', 'proveedores_ensure_schema');
 proveedores_ensure_schema();
 
 $action = $action ?? 'listar';

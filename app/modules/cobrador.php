@@ -601,7 +601,7 @@ case 'pagos':
       <h1 class="h4 m-0">Pagos del contrato #<?= e($id_contrato) ?></h1>
       <div class="text-muted small">
         <span class="me-2"><strong>Titular:</strong> <?= e($c['titular'] ?? '—') ?></span>
-        <span class="me-2"><strong>Costo:</strong> $<?= number_format($costo_final, 2) ?></span>
+        <span class="me-2"><strong>Costo:</strong> $<?= number_format($costo_final+$descuento, 2) ?></span>
         <?php if($descuento > 0): ?>
             <span class="me-2 text-success"><strong>Desc:</strong> -$<?= number_format($descuento, 2) ?></span>
         <?php endif; ?>
@@ -628,14 +628,20 @@ case 'pagos':
             </tr>
           </thead>
           <tbody>
-          <?php foreach ($pagos as $p): 
-            // 2. LÓGICA DEL DETALLE:
-            // Tomamos el saldo histórico guardado en el abono y le restamos el descuento del contrato
-            // para mostrar el saldo neto real en ese momento.
-            $saldo_fila = (float)$p['saldo'] - $descuento;
+<?php 
+          // 1. Inicializamos un saldo dinámico tomando el Saldo Actual global
+          $saldo_dinamico = $saldo_calc; 
+
+          foreach ($pagos as $p): 
+            // 2. El saldo de esta fila es el saldo dinámico en este punto del tiempo
+            $saldo_fila = $saldo_dinamico; 
             
-            // Evitamos negativos visuales si el descuento es muy grande o hay error de datos
+            // Evitamos negativos por si hay inconsistencias mayores
             if ($saldo_fila < 0) $saldo_fila = 0;
+
+            // 3. Sumamos el abono actual para que la SIGUIENTE fila (que es un pago más antiguo) 
+            // tenga el saldo correcto antes de que se hiciera este pago.
+            $saldo_dinamico += (float)$p['cant_abono'];
           ?>
             <tr>
               <td><small class="font-monospace">#<?= str_pad((string)$p['id_abono'], 6, '0', STR_PAD_LEFT) ?></small></td>
@@ -677,7 +683,7 @@ case 'estado':
     redirect('cobrador.contratos');
   }
 
-  $c = qone("SELECT c.id_contrato, c.costo_final, c.estatus, t.titular,
+  $c = qone("SELECT c.id_contrato, c.costo_final,c.descuento, c.estatus, t.titular,
                     TRIM(CONCAT(
                       IFNULL(d.calle, ''), ' ',
                       IFNULL(CONCAT('#', d.num_ext), ''), ', ',
@@ -699,6 +705,7 @@ case 'estado':
   $sum = qone("SELECT COALESCE(SUM(cant_abono),0) AS total_pagado FROM futuro_abonos WHERE id_contrato=?", [$id_contrato]);
   $total_pagado = (float)($sum['total_pagado'] ?? 0);
   $costo_final = (float)($c['costo_final'] ?? 0);
+  $descuento = (float)($c['descuento'] ?? 0);
   $saldo_calc = $costo_final - $total_pagado;
   if ($saldo_calc < 0) $saldo_calc = 0;
 
@@ -752,15 +759,16 @@ case 'estado':
         <div><strong>Titular:</strong> <?= e($c['titular'] ?? '—') ?></div>
         <div><strong>Dirección:</strong> <?= e(trim((string)($c['direccion'] ?? '')) ?: '—') ?></div>
         <div class="mt-1">
-          <span class="me-2"><strong>Costo:</strong> $<?= number_format($costo_final, 2) ?></span>
-          <span class="me-2"><strong>Pagado:</strong> $<?= number_format($total_pagado, 2) ?></span>
+          <span class="me-2"><strong>Costo:</strong> $<?= number_format($costo_final+$descuento, 2) ?></span>
+          <span class="me-2"><strong>Descuento:</strong> $<?= number_format($descuento/2, 2) ?></span>
+
+          <span class="me-2"><strong>Pagado:</strong> $<?= number_format($total_pagado+($descuento/2), 2) ?></span>
           <span><strong>Saldo:</strong> <span class="text-danger fw-semibold">$<?= number_format($saldo_calc, 2) ?></span></span>
         </div>
       </div>
     </div>
 
     <div class="no-print d-flex gap-2">
-      
       <button onclick="window.print();" class="btn btn-sm btn-primary">🖨️ Imprimir</button>
     </div>
   </div>
@@ -781,10 +789,23 @@ case 'estado':
 
             </tr>
           </thead>
-          <tbody>
-          <?php foreach ($movs as $m): 
+<tbody>
+          <?php 
+          // 1. Iniciamos el contador con tu Saldo Actual real ($6,800 en tu ejemplo)
+          $saldo_dinamico = $saldo_calc; 
+
+          foreach ($movs as $m): 
             $tipo = $m['tipo'] ?? '';
             $is_abono = $tipo === 'abono';
+            
+            // 2. Este es el saldo que quedó DESPUÉS de hacer este movimiento
+            $saldo_mostrar = $saldo_dinamico;
+            
+            // 3. Preparamos el saldo para el SIGUIENTE ciclo (hacia el pasado).
+            // Solo sumamos el monto si fue un pago real (abono).
+            if ($is_abono) {
+                $saldo_dinamico += (float)($m['monto'] ?? 0);
+            }
           ?>
             <tr>
               <td><small><?= $m['fecha'] ? date('d/m/Y H:i', strtotime($m['fecha'])) : '—' ?></small></td>
@@ -792,18 +813,46 @@ case 'estado':
               <td><small class="font-monospace">#<?= str_pad((string)($m['folio'] ?? ''), 6, '0', STR_PAD_LEFT) ?></small></td>
               <td class="text-end"><small><?= $is_abono ? '$'.number_format((float)($m['monto'] ?? 0), 2) : '—' ?></small></td>
               <td class="text-end">
-                <small class="text-danger"><?= $is_abono ? '$'.number_format((float)($m['saldo'] ?? 0), 2) : '—' ?></small>
+                <small class="text-danger"><?= $is_abono ? '$'.number_format($saldo_mostrar, 2) : '—' ?></small>
               </td>
               <td><small class="text-muted"><?= e($m['notas'] ?? '—') ?></small></td>
               <td><small class="text-muted"><?= e(trim((string)($m['responsable'] ?? '')) ?: '—') ?></small></td>
             </tr>
           <?php endforeach; ?>
-
-          <?php if (empty($movs)): ?>
+            
             <tr>
-              <td colspan="8" class="text-center text-muted py-4">No hay movimientos para este contrato.</td>
+              <td><small></small></td>
+              <td><small></small>Descuento</td>
+              <td><small class="font-monospace"></small></td>
+
+              <?php 
+              if(!empty($descuento))
+              {
+                  if($descuento>=300) 
+                  { ?>
+                  <td class="text-end"><small><?php echo '$'.number_format((float)($descuento/2), 2); ?></small></td>
+                  <?php 
+                  }
+                  else
+                  {
+                    ?>
+                  <td class="text-end"><small><?php echo '$'.number_format((float)($descuento), 2); ?></small></td>
+                    <?php
+                  }
+              }
+              else {
+                  // Celda vacía para cuadrar si no hay descuento
+                  echo '<td class="text-end"></td>';
+              }
+              ?>
+
+              <td class="text-end">
+                <small class="text-danger"></small>
+              </td>
+              <td><small class="text-muted">$<?= number_format($costo_final, 2) ?></small></td>
+              <td><small class="text-muted"></small></td>
             </tr>
-          <?php endif; ?>
+
           </tbody>
         </table>
       </div>
@@ -830,19 +879,26 @@ case 'ticket':
         c.id_contrato, c.estatus, c.tipo_contrato, c.costo_final, c.tipo_pago,
         t.titular,
         COALESCE(CONCAT(p.nombre, ' ', p.apellido_p), ?) AS nombre_cobrador,
+        
+        -- TOTAL PAGADO HASTA ESE MOMENTO: Sumamos solo los abonos anteriores o iguales a este
         COALESCE((
           SELECT SUM(a2.cant_abono)
           FROM futuro_abonos a2
-          WHERE a2.id_contrato = c.id_contrato
-        ),0) AS total_pagado,
+          WHERE a2.id_contrato = c.id_contrato 
+            AND a2.id_abono <= a.id_abono
+        ),0) AS total_pagado_historico,
+        
+        -- SALDO RESTANTE EN ESE MOMENTO: Costo final menos lo pagado hasta ese momento
         GREATEST(
           c.costo_final - COALESCE((
             SELECT SUM(a3.cant_abono)
             FROM futuro_abonos a3
             WHERE a3.id_contrato = c.id_contrato
+              AND a3.id_abono <= a.id_abono
           ),0),
           0
-        ) AS saldo_actual
+        ) AS saldo_historico
+        
     FROM futuro_abonos a
     INNER JOIN futuro_contratos c ON c.id_contrato = a.id_contrato
     LEFT JOIN vw_titular_contrato t ON t.id_contrato = c.id_contrato
@@ -918,7 +974,7 @@ case 'ticket':
 
           <div class="ticket-row">
             <span class="ticket-label">Saldo Restante:</span>
-            <span class="ticket-value text-danger">$<?= number_format((float)$data['saldo_actual'], 2) ?></span>
+            <span class="ticket-value text-danger">$<?= number_format((float)$data['saldo_historico'], 2) ?></span>
           </div>
 
           <div class="mt-4 text-center">

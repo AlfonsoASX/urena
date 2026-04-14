@@ -12,8 +12,9 @@ require_login();
  * - Agrega columna 'eliminado' si no existe.
  */
 function fallecidos_ensure_columns() {
-  try { q("ALTER TABLE fallecido ADD COLUMN IF NOT EXISTS eliminado TINYINT(1) NOT NULL DEFAULT 0"); } catch(Exception $e){}
+  db_add_column_if_missing('fallecido', 'eliminado', "TINYINT(1) NOT NULL DEFAULT 0");
 }
+db_register_schema_repair('fallecidos', 'fallecidos_ensure_columns');
 fallecidos_ensure_columns();
 
 $action = $action ?? 'listar';

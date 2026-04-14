@@ -860,6 +860,7 @@ case 'listar':
 
       require_once 'dompdf/autoload.inc.php';
 
+
       $titular = trim("{$c['nombre']} {$c['apellido_p']} {$c['apellido_m']}");
       $dom = trim("{$c['calle']} #{$c['num_ext']}".($c['num_int'] ? " Int. {$c['num_int']}" : "")." {$c['colonia']} {$c['municipio']}");
       $costo = number_format((float)$c['costo_final'], 2);
@@ -867,6 +868,7 @@ case 'listar':
       $folio = $idc.'/'.$anio_folio;
       $fecha_contrato = __fecha_es($c['fecha_registro'] ?? null);
       $tipo_contrato = htmlspecialchars($c['tipo_contrato'] ?? '', ENT_QUOTES, 'UTF-8');
+
 
       $html = '<html><head><meta charset="utf-8">
       <style>
@@ -880,6 +882,78 @@ case 'listar':
         .muted{color:#666;}
       </style></head><body>';
 
+switch($tipo_contrato)
+{
+  case 'SERVICIO COMPLETO':
+  $html = '<html><head><meta charset="utf-8">
+      <style>
+        body{font-family: DejaVu Sans, Arial, sans-serif; font-size: 11px; line-height: 1.2;} /* Reducido de 12px a 11px */
+        h2{margin:0 0 4px 0; text-align:center; font-size: 16px;}
+        h3{margin:0 0 8px 0; text-align:center; font-weight:normal; color:#555; font-size:13px;}
+        .folio{margin:0 0 5px 0; text-align:right; font-weight: bold;}
+        ul{margin:5px 0 5px 18px;}
+        li{margin-bottom: 2px;}
+        .firmas{margin-top:20px; text-align:center;}
+        .muted{color:#666;}
+        
+        /* Clase para forzar el salto de hoja */
+        .saltopagina {
+            page-break-before: always;
+        }
+      </style></head><body>';
+$html .= '<h2>CONTRATO DE SERVICIOS A PREVISIÓN</h2>';
+      $html .= '<p class="folio">No. '.htmlspecialchars($folio, ENT_QUOTES, 'UTF-8').'</p>';
+
+      $html .= '<p>En la ciudad de León, Guanajuato, a <strong>'.htmlspecialchars($fecha_contrato, ENT_QUOTES, 'UTF-8').'</strong> los que suscriben este documento comparecen, por una parte, <strong>GRUPO UREÑA FUNERARIOS</strong> y por la otra el C. <strong>'.htmlspecialchars($titular, ENT_QUOTES, 'UTF-8').'</strong> con domicilio en <strong>'.htmlspecialchars($dom, ENT_QUOTES, 'UTF-8').'</strong> en su calidad de titular; manifestando ambas partes, su conformidad para celebrar un contrato de prestación de servicios funerarios a futuro bajo las siguientes condiciones.</p>';
+
+      $html .= '<p><strong>PRIMERA.</strong> El titular contrata un servicio de un <strong>'.($tipo_contrato ?: 'PLAN PREVISOR').'</strong> y expresa su entera conformidad de cubrir la cantidad de <strong>$'.htmlspecialchars($costo, ENT_QUOTES, 'UTF-8').'</strong> como importe del servicio contratado, el que será cubierto mediante los pagos pactados en la administración.</p>';
+
+      $html .= '<p><strong>SEGUNDA.</strong> En los supuestos de que los abonos pactados no se cubran oportunamente pasados los 30 días del primer abono no cubierto, se dará por terminado el compromiso aquí pactado, conviniendo ambas partes, que la cantidad que se haya entregado, queda como depósito efectivo a favor del titular a cuenta de la prestación de un servicio funerario requerido a futuro. Este compromiso se aplicará también cuando el titular decida cancelar voluntariamente.</p>';
+
+      $html .= '<p><strong>TERCERA.</strong> Si el servicio funerario es requerido antes de haberse pagado totalmente, GRUPO UREÑA FUNERARIOS otorgará el servicio cuando se lo soliciten, debiendo cubrir el titular el saldo pendiente 2 horas antes de que termine el servicio.</p>';
+
+      $html .= '<p><strong>CUARTA.</strong> Bajo ninguna circunstancia se podrán sumar las aportaciones de 2 (dos) o más contratos diferentes, para la prestación de un servicio.</p>';
+
+      $html .= '<p><strong>QUINTA.</strong> Los servicios funerarios, se otorgarán únicamente por GRUPO UREÑA FUNERARIOS en sus cuatro direcciones, con horario establecido las 24 horas del día, los 365 días del año y los servicios a otorgar serán los siguientes:</p>';
+
+      $html .= '<ul>
+        <li>A) Traslado del cuerpo desde cualquier unidad médica, SEMEFO o domicilio particular en esta ciudad a las capillas de velación o al domicilio particular en esta Ciudad según solicite.</li>
+        <li>B) Ataúd metálico o de madera estándar, color único modelo español o similar.</li>
+        <li>C) Servicio de velación en capillas de GRUPO UREÑA FUNERARIOS hasta por 24 horas.</li>
+        <li>D) Servicio de cafetería en la capilla funeraria.</li>
+        <li>E) Equipo de velación para domicilio hasta 24 horas (Opcional).</li>
+        <li>F) Servicio de cafetería básico, si la velación fuese en el domicilio del particular (Opcional).</li>
+        <li>G) 50 Sillas plegables y toldo de protección para velación en domicilio (Opcional).</li>
+        <li>H) Renta de ataúd metálico o de madera estándar, color único (en caso de cremación).</li>
+        <li>I) Servicio de cremación en el crematorio de GRUPO UREÑA FUNERARIOS (Opcional).</li>
+        <li>J) Urna para cenizas modelo Ecopack en caso de cremación (Opcional).</li>
+        <li>K) Asesoría y trámite del permiso para sepultar o cremar (Opcional).</li>
+        <li>L) Asesoría y trámite del acta de defunción.</li>
+        <li>M) Servicios de vehículos especiales (Vans y Carrozas) para los traslados.</li>
+        <li>N) Traslado al cementerio o crematorio de GRUPO UREÑA FUNERARIOS, dentro del municipio de León.</li>
+        <li>O) Cien recuerdos para los familiares. P) Libro de recuerdo. Q) Arreglo Estético (No embalsamado).</li>
+      </ul>';
+
+      $html .= '<p><strong>SEXTA.</strong> En caso de fallecimiento accidental instantáneo del titular únicamente, quedará automáticamente liquidado el saldo, siempre y cuando vaya al corriente con sus pagos.</p>';
+
+      $html .= '<p><strong>NOVENA.</strong> Este servicio contratado, podrá ser transferible a persona distinta al titular, previa autorización del contratante.</p>';
+
+      $html .= '<p><strong>DÉCIMA SEGUNDA.</strong> El contratante tendrá un plazo de cinco días hábiles contados a partir del día siguiente a la firma del contrato, para poder cancelar la contratación en base a la NOM-036-SCFI-2000.</p>';
+
+      $html .= '<div class="firmas" style="display: flex; justify-content: space-between; margin-top: 30px;">
+        <div style="text-align: center;">_________________________<br>GRUPO UREÑA FUNERARIOS</div>
+        <div style="text-align: center;">_________________________<br>'.htmlspecialchars($titular, ENT_QUOTES, 'UTF-8').'<br>TITULAR</div>
+      </div>';
+
+      $html .= '<br><br><br><br><br><br><br>';
+
+      $html .= '<h1>CESIÓN DE DERECHOS</h1>';
+      $html .= '<p>Por este medio transfiero los derechos y obligaciones del presente contrato con número <strong>'.htmlspecialchars($folio, ENT_QUOTES, 'UTF-8').'</strong> a nombre de ________________________________ siendo yo, <strong>'.htmlspecialchars($titular, ENT_QUOTES, 'UTF-8').'</strong>, titular del mismo, y lo cedo para la persona quien llevo el nombre en vida de ________________________________ por lo cual deslindo a GRUPO UREÑA FUNERARIOS, de cualquier obligación hacia mi con respecto al presente contrato, en situaciones futuras.</p>';
+
+      $html .= '<div style="margin-top: 20px; text-align: center;">_________________________<br>Titular del contrato</div>';
+
+        break;
+  default:
       $html .= '<h2>Contrato de Servicio</h2>';
       if ($tipo_contrato) {
           $html .= '<h3>'.$tipo_contrato.'</h3>';
@@ -911,6 +985,12 @@ case 'listar':
       </div>';
 
       $html .= '</body></html>';
+
+}
+
+
+
+
 
       $dompdf = new \Dompdf\Dompdf();
       $dompdf->loadHtml($html, 'UTF-8');

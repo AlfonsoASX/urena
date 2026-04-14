@@ -345,15 +345,18 @@ break;
 
 
 case 'borrar_abono':
-  $id_abono   = (int)($_GET['id_abono'] ?? 0);
+  $id_abono    = (int)($_GET['id_abono'] ?? 0);
   $id_contrato = (int)($_GET['id_contrato'] ?? 0);
 
   if ($id_abono > 0 && $id_contrato > 0) {
-    // Primero borrar relación con cobrador
+    // 1. Borrar relación con cobrador
     q("DELETE FROM futuro_abono_cobrador WHERE id_abono=?", [$id_abono]);
-
-    // Luego borrar el abono
-    q("DELETE FROM futuro_abonos WHERE id_abono=? AND id_contrato=?", [$id_abono,$id_contrato]);
+    // 2. Borrar dependencias en futuro_comcob
+    q("DELETE FROM futuro_comcob WHERE id_abono=?", [$id_abono]);
+    // 3. NUEVO: Borrar dependencias en futuro_comision_semanal
+    q("DELETE FROM futuro_comision_semanal WHERE id_abono=?", [$id_abono]);
+    // 4. Finalmente borrar el abono
+    q("DELETE FROM futuro_abonos WHERE id_abono=? AND id_contrato=?", [$id_abono, $id_contrato]);
 
     $_SESSION['_alerts'] = "<div class='alert alert-warning'>Abono eliminado correctamente.</div>";
   }
@@ -430,6 +433,8 @@ if ($per > 0) {
     }
 
     $sql .= " ORDER BY a.id_abono DESC LIMIT 1000";
+
+//    print_r($params);
 
     $rows = qall($sql, $params);
 
@@ -509,6 +514,459 @@ if ($per > 0) {
 break;
 
 /* =========================================================
+ * REPORTE DE COMISIONES (Lógica SQL Base)
+ * =======================================================*/
+case 'reporte_comisiones':
+  $id_vendedor = (int)($_GET['id_vendedor'] ?? 0);
+  $f1          = trim($_GET['f1'] ?? date('Y-m-01')); // Inicio de mes por defecto
+  $f2          = trim($_GET['f2'] ?? date('Y-m-t'));  // Fin de mes por defecto
+  
+  $vendedores = __get_personal_activo();
+  $rows = [];
+  $total_comisionable = 0.0;
+
+  if ($id_vendedor > 0) {
+    // Usamos tu SQL Base adaptado con filtros de parámetros (?)
+    $sql = "SELECT 
+              a.id_abono,
+              a.fecha_registro AS fecha_pago,
+              a.cant_abono,
+              c.id_contrato,
+              /* Nombres */
+              CONCAT(p_prom.nombre, ' ', p_prom.apellido_p, ' ', p_prom.apellido_m) AS promotor,
+              CONCAT(p_cob.nombre, ' ', p_cob.apellido_p, ' ', p_cob.apellido_m) AS cobrador,
+              
+              /* TU LÓGICA DE PRIORIDAD */
+              CASE 
+                  WHEN c.porc_promotor > 0 THEN 'Promotor'
+                  WHEN c.porc_jefe_cuad > 0 THEN 'Jefe de Cuadrilla'
+                  WHEN c.porc_lider > 0 THEN 'Líder'
+                  ELSE 'Empresa (Ganancia)'
+              END AS beneficiario,
+              
+              c.porc_promotor,
+              c.porc_jefe_cuad,
+              c.porc_lider,
+              c.porc_empresa,
+              c.costo_final
+          FROM futuro_abonos a
+          INNER JOIN futuro_contratos c ON a.id_contrato = c.id_contrato
+          /* Relación con el Vendedor (Promotor) para filtrar */
+          INNER JOIN futuro_contrato_vendedor cv ON c.id_contrato = cv.id_contrato
+          LEFT JOIN futuro_personal p_prom ON cv.id_personal = p_prom.id_personal
+          /* Relación con el Cobrador */
+          LEFT JOIN futuro_abono_cobrador ac ON a.id_abono = ac.id_abono
+          LEFT JOIN futuro_personal p_cob ON ac.id_personal = p_cob.id_personal
+          
+          WHERE cv.id_personal = ? 
+            AND a.fecha_registro BETWEEN ? AND ?
+          ORDER BY a.fecha_registro ASC";
+
+
+$sql = "
+SELECT 
+    a.id_abono,
+    a.fecha_registro AS fecha_pago,
+    a.cant_abono,
+    c.id_contrato,
+
+    /* Nombres */
+    CONCAT(p_prom.nombre, ' ', p_prom.apellido_p, ' ', p_prom.apellido_m) AS promotor,
+    CONCAT(p_cob.nombre, ' ', p_cob.apellido_p, ' ', p_cob.apellido_m) AS cobrador,
+
+    /* Descuento y 50% */
+    COALESCE(c.descuento,0) AS descuento_contrato,
+    ROUND(COALESCE(c.descuento,0) * 0.50, 2) AS monto_desc50,
+
+    /* Detecta si este es el PRIMER abono del contrato */
+    CASE
+      WHEN a.id_abono = (
+        SELECT a2.id_abono
+        FROM futuro_abonos a2
+        WHERE a2.id_contrato = a.id_contrato
+        ORDER BY a2.fecha_registro ASC, a2.id_abono ASC
+        LIMIT 1
+      ) THEN 1 ELSE 0
+    END AS es_primer_abono,
+
+    /* Señal: el promotor se paga SOLO en el primer abono (desc * 0.50) */
+    CASE
+      WHEN COALESCE(c.porc_promotor,0) > 0
+       AND (COALESCE(c.descuento,0) * 0.50) > 0
+       AND a.id_abono = (
+          SELECT a2.id_abono
+          FROM futuro_abonos a2
+          WHERE a2.id_contrato = a.id_contrato
+          ORDER BY a2.fecha_registro ASC, a2.id_abono ASC
+          LIMIT 1
+       )
+      THEN 1 ELSE 0
+    END AS promotor_pagado_en_primer_abono,
+
+    /* BENEFICIARIO (regla nueva + tu prioridad) */
+    CASE
+      /* Regla: el primer abono (desc*0.50) es para el promotor si existe %/monto promotor */
+      WHEN COALESCE(c.porc_promotor,0) > 0
+       AND (COALESCE(c.descuento,0) * 0.50) > 0
+       AND a.id_abono = (
+          SELECT a2.id_abono
+          FROM futuro_abonos a2
+          WHERE a2.id_contrato = a.id_contrato
+          ORDER BY a2.fecha_registro ASC, a2.id_abono ASC
+          LIMIT 1
+       )
+      THEN 'Promotor'
+
+      /* Después del primer abono, el promotor ya NO cobra (ya se acabó) → empresa */
+      WHEN COALESCE(c.porc_promotor,0) > 0
+       AND (COALESCE(c.descuento,0) * 0.50) > 0
+       AND a.id_abono <> (
+          SELECT a2.id_abono
+          FROM futuro_abonos a2
+          WHERE a2.id_contrato = a.id_contrato
+          ORDER BY a2.fecha_registro ASC, a2.id_abono ASC
+          LIMIT 1
+       )
+      THEN 'Empresa (Ganancia)'
+
+      /* Si no aplica la regla del descuento, usa TU prioridad original */
+      ELSE (
+        CASE 
+          WHEN c.porc_promotor > 0 THEN 'Promotor'
+          WHEN c.porc_jefe_cuad > 0 THEN 'Jefe de Cuadrilla'
+          WHEN c.porc_lider > 0 THEN 'Líder'
+          ELSE 'Empresa (Ganancia)'
+        END
+      )
+    END AS beneficiario,
+
+    /* Montos del contrato */
+    c.porc_promotor,
+    c.porc_jefe_cuad,
+    c.porc_lider,
+    c.porc_empresa,
+    c.costo_final
+
+FROM futuro_abonos a
+INNER JOIN futuro_contratos c ON a.id_contrato = c.id_contrato
+
+/* Relación con el Vendedor (Promotor) para filtrar */
+INNER JOIN futuro_contrato_vendedor cv ON c.id_contrato = cv.id_contrato
+LEFT JOIN futuro_personal p_prom ON cv.id_personal = p_prom.id_personal
+
+/* Relación con el Cobrador */
+LEFT JOIN futuro_abono_cobrador ac ON a.id_abono = ac.id_abono
+LEFT JOIN futuro_personal p_cob ON ac.id_personal = p_cob.id_personal
+
+WHERE cv.id_personal = ? 
+  AND a.fecha_registro BETWEEN ? AND ?
+ORDER BY a.fecha_registro ASC
+";
+
+
+$sql = "
+SELECT 
+    a.id_abono,
+    a.fecha_registro AS fecha_pago,
+    a.cant_abono,
+    c.id_contrato,
+
+    /* Nombres */
+    CONCAT(p_prom.nombre, ' ', p_prom.apellido_p, ' ', p_prom.apellido_m) AS promotor,
+    CONCAT(p_cob.nombre, ' ', p_cob.apellido_p, ' ', p_cob.apellido_m) AS cobrador,
+
+    COALESCE(c.descuento,0) AS descuento_contrato,
+    ROUND(COALESCE(c.descuento,0) * 0.50, 2) AS desc_50,
+
+    /* PRIMER ABONO GLOBAL del contrato */
+    CASE
+      WHEN a.id_abono = (
+        SELECT a2.id_abono
+        FROM futuro_abonos a2
+        WHERE a2.id_contrato = a.id_contrato
+        ORDER BY a2.fecha_registro ASC, a2.id_abono ASC
+        LIMIT 1
+      ) THEN 1 ELSE 0
+    END AS es_primer_abono,
+
+    /* BENEFICIARIO (bloqueante):
+       - Si aplica regla descuento+promotor: SOLO el primer abono es Promotor, los demás Empresa
+       - Si no aplica, tu prioridad normal
+    */
+    CASE
+      WHEN COALESCE(c.descuento,0) > 0
+       AND COALESCE(c.porc_promotor,0) > 0
+       AND a.id_abono = (
+          SELECT a2.id_abono
+          FROM futuro_abonos a2
+          WHERE a2.id_contrato = a.id_contrato
+          ORDER BY a2.fecha_registro ASC, a2.id_abono ASC
+          LIMIT 1
+       )
+      THEN 'Promotor'
+
+      WHEN COALESCE(c.descuento,0) > 0
+       AND COALESCE(c.porc_promotor,0) > 0
+      THEN 'Empresa (Ganancia)'
+
+      ELSE (
+        CASE 
+          WHEN c.porc_promotor > 0 THEN 'Promotor'
+          WHEN c.porc_jefe_cuad > 0 THEN 'Jefe de Cuadrilla'
+          WHEN c.porc_lider > 0 THEN 'Líder'
+          ELSE 'Empresa (Ganancia)'
+        END
+      )
+    END AS beneficiario,
+
+    /* Montos */
+    c.porc_promotor,
+    c.porc_jefe_cuad,
+    c.porc_lider,
+    c.porc_empresa,
+    c.costo_final
+
+FROM futuro_abonos a
+INNER JOIN futuro_contratos c ON a.id_contrato = c.id_contrato
+
+/* PROMOTOR: toma SOLO el registro más reciente para evitar duplicados */
+LEFT JOIN futuro_contrato_vendedor cv
+  ON cv.id_contrato = c.id_contrato
+ AND cv.id_cont_vend = (
+    SELECT cv2.id_cont_vend
+    FROM futuro_contrato_vendedor cv2
+    WHERE cv2.id_contrato = c.id_contrato
+    ORDER BY cv2.id_cont_vend DESC
+    LIMIT 1
+ )
+LEFT JOIN futuro_personal p_prom ON p_prom.id_personal = cv.id_personal
+
+/* COBRADOR */
+LEFT JOIN futuro_abono_cobrador ac ON a.id_abono = ac.id_abono
+LEFT JOIN futuro_personal p_cob ON p_cob.id_personal = ac.id_personal
+
+WHERE cv.id_personal = ?
+  AND a.fecha_registro BETWEEN ? AND ?
+ORDER BY a.fecha_registro ASC
+";
+
+
+$sql = "
+SELECT 
+    a.id_abono,
+    a.fecha_registro AS fecha_pago,
+    a.cant_abono,
+    c.id_contrato,
+
+    CONCAT(p_prom.nombre, ' ', p_prom.apellido_p, ' ', p_prom.apellido_m) AS promotor,
+    CONCAT(p_cob.nombre, ' ', p_cob.apellido_p, ' ', p_cob.apellido_m) AS cobrador,
+
+    COALESCE(c.descuento,0) AS descuento_contrato,
+    ROUND(COALESCE(c.descuento,0) * 0.50, 2) AS desc_50,
+
+    /* CUANTOS PAGOS VAN EN EL CONTRATO */
+    (
+        SELECT COUNT(*)
+        FROM futuro_abonos a2
+        WHERE a2.id_contrato = c.id_contrato
+    ) AS cuantos_pagos_van,
+
+    /* MONTO TOTAL COBRADO DEL CONTRATO */
+    (
+        SELECT COALESCE(SUM(a3.cant_abono),0)
+        FROM futuro_abonos a3
+        WHERE a3.id_contrato = c.id_contrato
+    ) AS monto_total_cobrado,
+
+    CASE
+      WHEN a.id_abono = (
+        SELECT a2.id_abono
+        FROM futuro_abonos a2
+        WHERE a2.id_contrato = a.id_contrato
+        ORDER BY a2.fecha_registro ASC, a2.id_abono ASC
+        LIMIT 1
+      ) THEN 1 ELSE 0
+    END AS es_primer_abono,
+
+    CASE
+      WHEN COALESCE(c.descuento,0) > 0
+       AND COALESCE(c.porc_promotor,0) > 0
+       AND a.id_abono = (
+          SELECT a2.id_abono
+          FROM futuro_abonos a2
+          WHERE a2.id_contrato = a.id_contrato
+          ORDER BY a2.fecha_registro ASC, a2.id_abono ASC
+          LIMIT 1
+       )
+      THEN 'Promotor'
+
+      WHEN COALESCE(c.descuento,0) > 0
+       AND COALESCE(c.porc_promotor,0) > 0
+      THEN 'Empresa (Ganancia)'
+
+      ELSE (
+        CASE 
+          WHEN c.porc_promotor > 0 THEN 'Promotor'
+          WHEN c.porc_jefe_cuad > 0 THEN 'Jefe de Cuadrilla'
+          WHEN c.porc_lider > 0 THEN 'Líder'
+          ELSE 'Empresa (Ganancia)'
+        END
+      )
+    END AS beneficiario,
+
+    c.porc_promotor,
+    c.porc_jefe_cuad,
+    c.porc_lider,
+    c.porc_empresa,
+    c.costo_final
+
+FROM futuro_abonos a
+INNER JOIN futuro_contratos c ON a.id_contrato = c.id_contrato
+
+LEFT JOIN futuro_contrato_vendedor cv
+  ON cv.id_contrato = c.id_contrato
+ AND cv.id_cont_vend = (
+    SELECT cv2.id_cont_vend
+    FROM futuro_contrato_vendedor cv2
+    WHERE cv2.id_contrato = c.id_contrato
+    ORDER BY cv2.id_cont_vend DESC
+    LIMIT 1
+ )
+LEFT JOIN futuro_personal p_prom ON p_prom.id_personal = cv.id_personal
+
+LEFT JOIN futuro_abono_cobrador ac ON a.id_abono = ac.id_abono
+LEFT JOIN futuro_personal p_cob ON p_cob.id_personal = ac.id_personal
+
+WHERE cv.id_personal = ?
+  AND a.fecha_registro BETWEEN ? AND ?
+ORDER BY a.fecha_registro ASC
+";
+
+
+    // Ajustamos fechas para cubrir todo el día (00:00:00 a 23:59:59)
+    $fecha_inicio = "$f1 00:00:00";
+    $fecha_fin    = "$f2 23:59:59";
+
+    $rows = qall($sql, [$id_vendedor, $fecha_inicio, $fecha_fin]);
+
+    // Calculamos el total solo de los registros que le tocan al promotor
+    foreach ($rows as $r) {
+        if ($r['beneficiario'] === 'Promotor') {
+            $total_comisionable += (float)$r['cant_abono'];
+        }
+    }
+  }
+
+  ob_start(); ?>
+  
+  <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-2 mb-3">
+    <h1 class="h4 m-0">Reporte de Comisiones</h1>
+  </div>
+
+  <div class="card shadow-sm mb-3">
+    <div class="card-body">
+      <form class="row g-2 align-items-end" method="get">
+        <input type="hidden" name="r" value="pagos.reporte_comisiones">
+        
+        <div class="col-md-4">
+          <label class="form-label">Vendedor</label>
+          <select name="id_vendedor" class="form-select" required>
+            <option value="">— Selecciona Vendedor —</option>
+            <?php foreach($vendedores as $v): ?>
+              <option value="<?= (int)$v['id_personal'] ?>" <?= $id_vendedor === (int)$v['id_personal'] ? 'selected' : '' ?>>
+                <?= e($v['nombre']) ?>
+              </option>
+            <?php endforeach; ?>
+          </select>
+        </div>
+
+        <div class="col-md-3">
+          <label class="form-label">Desde</label>
+          <input type="date" name="f1" class="form-control" value="<?= e($f1) ?>" required>
+        </div>
+
+        <div class="col-md-3">
+          <label class="form-label">Hasta</label>
+          <input type="date" name="f2" class="form-control" value="<?= e($f2) ?>" required>
+        </div>
+
+        <div class="col-md-2 d-grid">
+          <button class="btn btn-primary">Buscar</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <?php if ($id_vendedor > 0): ?>
+    <div class="table-responsive">
+      <table class="table table-sm table-hover table-bordered">
+        <thead class="table-light">
+          <tr>
+            <th>Fecha Pago</th>
+            <th>Contrato</th>
+            <th>Monto Pago</th>
+            <th>Beneficiario (Lógica)</th>
+            <th>¿Tiene Derecho?</th>
+            <th>Monto Comisión</th>
+          </tr>
+        </thead>
+        <tbody>
+          <?php if (empty($rows)): ?>
+            <tr><td colspan="6" class="text-center text-muted p-3">No se encontraron pagos en este rango para este vendedor.</td></tr>
+          <?php else: ?>
+            <?php foreach ($rows as $r): 
+                $es_promotor = ($r['beneficiario'] === 'Promotor');
+                // Estilos visuales
+                $bg_class = $es_promotor ? 'table-success' : 'text-muted bg-light'; 
+                $icono    = $es_promotor ? '✅ SI' : '❌ NO';
+            ?>
+            <tr class="<?= $es_promotor ? '' : 'text-muted' ?>">
+              <td><?= e($r['fecha_pago']) ?>
+<br>
+                
+<?php echo  $r['monto_total_cobrado']; ?>
+<br>
+<?php echo  $r['cuantos_pagos_van']; ?>
+
+
+
+              </td>
+              <td>#<?= (int)$r['id_contrato'] ?></td>
+              <td>$<?= number_format((float)$r['cant_abono'], 2) ?></td>
+              <td>
+                <span class="badge <?= $es_promotor ? 'bg-success' : 'bg-secondary' ?>">
+                    <?= e($r['beneficiario']) ?>
+                </span>
+              </td>
+              <td class="text-center fw-bold"><?= $icono ?></td>
+              <td class="text-end fw-bold">
+                <?php if($es_promotor): ?>
+                    $<?= number_format((float)$r['cant_abono'], 2) ?>
+                <?php else: ?>
+                    <span class="text-decoration-line-through text-muted small">$0.00</span>
+                <?php endif; ?>
+              </td>
+            </tr>
+            <?php endforeach; ?>
+          <?php endif; ?>
+        </tbody>
+        <?php if (!empty($rows)): ?>
+        <tfoot>
+            <tr class="table-dark">
+                <td colspan="5" class="text-end fs-5">Total Comisionable (Rango de fechas):</td>
+                <td class="text-end fs-5 fw-bold text-warning">$<?= number_format($total_comisionable, 2) ?></td>
+            </tr>
+        </tfoot>
+        <?php endif; ?>
+      </table>
+    </div>
+  <?php endif; ?>
+
+  <?php
+  render('Reporte de Comisiones', ob_get_clean());
+break;
+
+/* =========================================================
  * COMISIONES (captura manual)
  * =======================================================*/
 case 'comisiones':
@@ -569,6 +1027,165 @@ case 'comisiones':
   <?php
   render('Comisiones', ob_get_clean());
 break;
+
+/* =========================================================
+ * REPORTE BASE COMPLETO (solo filtro por fecha)
+ * Ejecuta EXACTAMENTE la consulta proporcionada
+ * =======================================================*/
+case 'reporte_base':
+
+  $f1 = trim($_GET['f1'] ?? '');
+  $f2 = trim($_GET['f2'] ?? '');
+
+  $rows = [];
+  $params = [];
+
+  if ($f1 !== '' && $f2 !== '') {
+    $where = "WHERE a.fecha_registro BETWEEN ? AND ?";
+    $params[] = $f1 . " 00:00:00";
+    $params[] = $f2 . " 23:59:59";
+  } else {
+    // Si no mandan fechas, últimos 30 días (puedes cambiarlo si quieres)
+    $where = "WHERE a.fecha_registro >= DATE_SUB(NOW(), INTERVAL 30 DAY)";
+  }
+
+  $sql = "
+  SELECT 
+      a.id_abono AS id_pago,
+      a.fecha_registro AS fecha_pago,
+      a.cant_abono AS monto_abono,
+      c.id_contrato AS id_contrato,
+
+      CONCAT(p_prom.nombre, ' ', p_prom.apellido_p, ' ', p_prom.apellido_m) AS nombre_promotor,
+      CONCAT(p_cob.nombre, ' ', p_cob.apellido_p, ' ', p_cob.apellido_m) AS nombre_cobrador,
+      
+      CASE 
+          WHEN c.porc_promotor > 0 THEN 'Promotor'
+          WHEN c.porc_jefe_cuad > 0 THEN 'Jefe de Cuadrilla'
+          WHEN c.porc_lider > 0 THEN 'Líder'
+          ELSE 'Empresa (Ganancia)'
+      END AS a_quien_pagar_hoy,
+
+      c.porc_promotor AS monto_promotor,
+      c.porc_jefe_cuad AS monto_jefe_cuadrilla,
+      c.porc_lider AS monto_lider,
+      c.porc_empresa AS monto_empresa,
+      
+      (c.porc_promotor + c.porc_jefe_cuad + c.porc_lider + c.porc_empresa) AS total_configurado_en_contrato,
+      c.costo_final AS costo_total_contrato
+
+  FROM futuro_abonos a
+  INNER JOIN futuro_contratos c ON a.id_contrato = c.id_contrato
+
+  LEFT JOIN futuro_contrato_vendedor cv ON c.id_contrato = cv.id_contrato
+  LEFT JOIN futuro_personal p_prom ON cv.id_personal = p_prom.id_personal
+
+  LEFT JOIN futuro_abono_cobrador ac ON a.id_abono = ac.id_abono
+  LEFT JOIN futuro_personal p_cob ON ac.id_personal = p_cob.id_personal
+
+  $where
+  ORDER BY a.fecha_registro ASC
+  ";
+
+  $rows = qall($sql, $params);
+
+  ob_start(); ?>
+
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <h1 class="h4 m-0">Reporte completo de pagos</h1>
+  </div>
+
+  <form class="row g-2 mb-3" method="get">
+    <input type="hidden" name="r" value="pagos.reporte_base">
+
+    <div class="col-md-3">
+      <label class="form-label">Desde</label>
+      <input type="date" name="f1" class="form-control" value="<?= e($f1) ?>">
+    </div>
+
+    <div class="col-md-3">
+      <label class="form-label">Hasta</label>
+      <input type="date" name="f2" class="form-control" value="<?= e($f2) ?>">
+    </div>
+
+    <div class="col-md-2 d-grid align-self-end">
+      <button class="btn btn-outline-primary">Consultar</button>
+    </div>
+  </form>
+
+  <div class="table-responsive">
+    <table id="tablaReporte" class="table table-sm table-striped table-bordered">
+      <thead>
+        <tr>
+          <th>ID Pago</th>
+          <th>Fecha</th>
+          <th>Monto Abono</th>
+          <th>ID Contrato</th>
+          <th>Promotor</th>
+          <th>Cobrador</th>
+          <th>A quién pagar hoy</th>
+          <th>Monto Promotor</th>
+          <th>Monto Jefe</th>
+          <th>Monto Líder</th>
+          <th>Monto Empresa</th>
+          <th>Total Configurado</th>
+          <th>Costo Total Contrato</th>
+        </tr>
+      </thead>
+      <tbody>
+        <?php foreach($rows as $r): ?>
+          <tr>
+            <td><?= (int)$r['id_pago'] ?></td>
+            <td><?= e($r['fecha_pago']) ?></td>
+            <td>$<?= number_format((float)$r['monto_abono'],2) ?></td>
+            <td><?= (int)$r['id_contrato'] ?></td>
+            <td><?= e($r['nombre_promotor'] ?? '—') ?></td>
+            <td><?= e($r['nombre_cobrador'] ?? '—') ?></td>
+            <td><?= e($r['a_quien_pagar_hoy']) ?></td>
+            <td><?= number_format((float)$r['monto_promotor'],2) ?></td>
+            <td><?= number_format((float)$r['monto_jefe_cuadrilla'],2) ?></td>
+            <td><?= number_format((float)$r['monto_lider'],2) ?></td>
+            <td><?= number_format((float)$r['monto_empresa'],2) ?></td>
+            <td><?= number_format((float)$r['total_configurado_en_contrato'],2) ?></td>
+            <td>$<?= number_format((float)$r['costo_total_contrato'],2) ?></td>
+          </tr>
+        <?php endforeach; ?>
+
+        <?php if(empty($rows)): ?>
+          <tr>
+            <td colspan="13" class="text-center text-muted">Sin resultados</td>
+          </tr>
+        <?php endif; ?>
+      </tbody>
+    </table>
+  </div>
+<!-- DataTables CSS -->
+<link rel="stylesheet" href="https://cdn.datatables.net/1.13.8/css/dataTables.bootstrap5.min.css"/>
+
+<!-- jQuery (si no lo tienes ya cargado) -->
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+
+<!-- DataTables JS -->
+<script src="https://cdn.datatables.net/1.13.8/js/jquery.dataTables.min.js"></script>
+<script src="https://cdn.datatables.net/1.13.8/js/dataTables.bootstrap5.min.js"></script>
+  <script>
+$(document).ready(function() {
+    $('#tablaReporte').DataTable({
+        pageLength: 25,
+        responsive: true,
+        order: [[1, "asc"]], // Ordena por fecha
+        language: {
+            url: "https://cdn.datatables.net/plug-ins/1.13.8/i18n/es-ES.json"
+        }
+    });
+});
+</script>
+
+
+  <?php
+  render('Reporte base completo', ob_get_clean());
+break;
+
 
 /* =========================================================
  * GUARDAR COMISION (POST) → futuro_comision_semanal

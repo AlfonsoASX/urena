@@ -3,8 +3,10 @@
 require_once __DIR__."/../core/db.php";
 require_once __DIR__."/../core/helpers.php";
 require_once __DIR__."/../core/auth.php";
+require_once __DIR__."/../core/servicios_operativos.php";
 
 require_login();
+so_bootstrap();
 
 /** KPIs rápidos (defensivos ante datos faltantes) */
 function kpi_int($sql,$params=[]){
@@ -14,9 +16,10 @@ function kpi_float($sql,$params=[]){
   try{ $r=qone($sql,$params); if(!$r) return 0.0; return (float)array_values($r)[0]; }catch(Throwable $e){ return 0.0; }
 }
 
-// Servicios
-$kpi_serv_abiertos = kpi_int("SELECT COUNT(*) FROM servicios WHERE COALESCE(eliminado,0)=0 AND COALESCE(cerrado,0)=0");
-$kpi_serv_cerrados = kpi_int("SELECT COUNT(*) FROM servicios WHERE COALESCE(eliminado,0)=0 AND COALESCE(cerrado,0)=1");
+// Servicios operativos
+$kpi_serv_abiertos = kpi_int("SELECT COUNT(*) FROM servicios s WHERE COALESCE(s.eliminado,0)=0 AND ".so_servicio_activos_sql());
+$kpi_serv_cerrados = kpi_int("SELECT COUNT(*) FROM servicios s WHERE COALESCE(s.eliminado,0)=0 AND ".so_servicio_cerrados_sql());
+$kpi_serv_pagos_hoy = kpi_float("SELECT COALESCE(SUM(monto),0) FROM servicio_pagos WHERE DATE(fecha_pago)=CURDATE()");
 
 // Inventario
 $kpi_articulos_total = kpi_int("SELECT COUNT(*) FROM articulos WHERE COALESCE(eliminado,0)=0");
@@ -86,9 +89,9 @@ ob_start(); ?>
     <div class="col-6 col-md-3">
       <div class="card kpi-card shadow-sm">
         <div class="card-body">
-          <div class="kpi-sub">Abonos del día</div>
-          <div class="kpi-value">$<?= number_format($kpi_abonos_hoy,2) ?></div>
-          <div class="kpi-sub">Contratos: <?= number_format($kpi_contratos) ?></div>
+          <div class="kpi-sub">Pagos servicio del día</div>
+          <div class="kpi-value">$<?= number_format($kpi_serv_pagos_hoy,2) ?></div>
+          <div class="kpi-sub">Abonos futuros: $<?= number_format($kpi_abonos_hoy,2) ?></div>
         </div>
       </div>
     </div>

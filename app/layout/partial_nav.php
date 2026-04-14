@@ -44,6 +44,22 @@
 
 
 <ul class="navbar-nav me-auto">
+  <?php if (user_has_role(['administradora','auxiliar','vendedor','coordinador','caja'])): ?>
+    <li class="nav-item dropdown">
+      <a class="nav-link dropdown-toggle" href="#" id="serviciosDrop" role="button" data-bs-toggle="dropdown">
+        Servicios Funerarios
+      </a>
+      <ul class="dropdown-menu" aria-labelledby="serviciosDrop">
+        <li><a class="dropdown-item" href="?r=servicios.listar">Servicios</a></li>
+        <li><a class="dropdown-item" href="?r=servicio_pagos.listar">Pagos de servicios</a></li>
+        <li><hr class="dropdown-divider"></li>
+        <li><a class="dropdown-item" href="?r=articulos.listar">Articulos</a></li>
+        <li><a class="dropdown-item" href="?r=cajas.listar">Ataudes</a></li>
+        <li><a class="dropdown-item" href="?r=equipos.listar">Equipos</a></li>
+        <li><a class="dropdown-item" href="?r=fallecidos.listar">Fallecidos</a></li>
+      </ul>
+    </li>
+  <?php endif; ?>
 <!--
   <?php if (user_has_role(['administradora','auxiliar','vendedor','cobrador'])): ?>
     <li class="nav-item">
@@ -77,7 +93,7 @@
 
     <li class="nav-item dropdown">
       <a class="nav-link dropdown-toggle" href="#" id="pagosDrop" role="button" data-bs-toggle="dropdown">
-        Contratos
+        Futuros
       </a>
       <ul class="dropdown-menu" aria-labelledby="pagosDrop">
         <li><a class="dropdown-item" href="?r=contratos.listar">Lista</a></li>
@@ -101,6 +117,10 @@
         <li><a class="dropdown-item" href="?r=pagos.nuevo_abono">Nuevo abono</a></li>
         <li><a class="dropdown-item" href="?r=pagos.corte">Corte</a></li>
         <li><a class="dropdown-item" href="?r=pagos.comisiones">Comisiones</a></li>
+        <li><a class="dropdown-item" href="?r=pagos.reporte_comisiones">Corte Vendedor</a></li>
+        <li><a class="dropdown-item" href="?r=pagos.reporte_base">Verificación</a></li>
+
+        
       </ul>
     </li>
   <?php endif; ?>
