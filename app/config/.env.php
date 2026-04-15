@@ -7,4 +7,8 @@ return [
   'modo_libre' => false,
   'base_url' => '/',
   'debug' => true,
+  'schema_bootstrap_mode' => 'ondemand',
+  'perf_log_enabled' => true,
+  'perf_log_threshold_ms' => 250,
+  'db_connect_timeout' => 3,
 ];

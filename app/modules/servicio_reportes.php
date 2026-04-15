@@ -5,7 +5,6 @@ require_once __DIR__.'/../core/auth.php';
 require_once __DIR__.'/../core/servicios_operativos.php';
 
 require_login();
-so_bootstrap();
 require_role(['administradora','auxiliar','vendedor','coordinador','caja']);
 
 $action = $action ?? 'orden_preparacion_pdf';
@@ -19,18 +18,53 @@ require_once __DIR__.'/../dompdf/autoload.inc.php';
 
 function servicio_reportes_output(string $title, string $bodyHtml, string $filename): void {
   $html = '<html><head><meta charset="utf-8"><style>
-    body{font-family:DejaVu Sans,sans-serif;font-size:12px;color:#222}
+    body{font-family:Helvetica,Arial,sans-serif;font-size:12px;color:#222}
     h1{font-size:20px;margin:0 0 8px}
     h2{font-size:15px;margin:18px 0 8px}
     .muted{color:#666}
     .grid{width:100%;border-collapse:collapse;margin-top:8px}
     .grid th,.grid td{border:1px solid #ccc;padding:6px 8px;text-align:left}
   </style></head><body>'.$bodyHtml.'</body></html>';
-  $dompdf = new \Dompdf\Dompdf();
-  $dompdf->loadHtml($html);
-  $dompdf->setPaper('A4', 'portrait');
-  $dompdf->render();
-  $dompdf->stream($filename, ['Attachment' => false]);
+
+  $previousDisplayErrors = ini_get('display_errors');
+  $previousReporting = error_reporting();
+  ini_set('display_errors', '0');
+  error_reporting($previousReporting & ~E_DEPRECATED & ~E_USER_DEPRECATED & ~E_NOTICE & ~E_WARNING);
+  $previousHandler = set_error_handler(static function ($severity, $message, $file) {
+    if (($severity & (E_DEPRECATED | E_USER_DEPRECATED | E_NOTICE | E_WARNING)) && strpos((string)$file, '/dompdf/') !== false) {
+      return true;
+    }
+    return false;
+  });
+
+  try {
+    $options = new \Dompdf\Options();
+    $options->set('defaultFont', 'Helvetica');
+    $options->set('isFontSubsettingEnabled', false);
+    $dompdf = new \Dompdf\Dompdf($options);
+    $dompdf->loadHtml($html, 'UTF-8');
+    $dompdf->setPaper('A4', 'portrait');
+    $dompdf->render();
+    $pdfOutput = $dompdf->output();
+  } finally {
+    if ($previousHandler !== null) {
+      restore_error_handler();
+    } else {
+      restore_error_handler();
+    }
+    error_reporting($previousReporting);
+    ini_set('display_errors', (string)$previousDisplayErrors);
+  }
+
+  while (ob_get_level() > 0) {
+    ob_end_clean();
+  }
+  if (!headers_sent()) {
+    header('Content-Type: application/pdf');
+    header('Content-Disposition: inline; filename="'.$filename.'"');
+    header('Cache-Control: private, max-age=0, must-revalidate');
+  }
+  echo $pdfOutput;
   exit;
 }
 

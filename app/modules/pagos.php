@@ -8,6 +8,9 @@ require_once __DIR__.'/../core/auth.php';
 require_login();
 
 $action = $action ?? 'contratos';
+if (in_array($action, ['reporte_base', 'reporte_comisiones', 'corte'], true)) {
+  db_enable_big_selects();
+}
 
 /** ---------------------------------------------
  * Catálogos básicos

@@ -6,37 +6,47 @@ require_once __DIR__.'/../core/auth.php';
 require_once __DIR__.'/../core/servicios_operativos.php';
 
 require_login();
-so_bootstrap();
 
 $action = $action ?? 'listar';
 $roles = ['administradora','auxiliar','vendedor','coordinador','caja'];
 require_role($roles);
 
+function servicios_date_to_input(?string $value): string {
+  if (!$value) return '';
+  $ts = strtotime($value);
+  if (!$ts) return '';
+  return date('Y-m-d', $ts);
+}
+
 function servicios_form_defaults(): array {
   return [
-    'tipo_servicio' => 'funerario',
-    'tipo_disposicion' => 'inhumacion',
-    'responsable' => '',
-    'auxiliares' => '',
+    'fallecido_nombre' => '',
+    'fallecido_fecha' => '',
+    'fallecido_municipio' => '',
+    'fallecido_hospital' => '',
+    'fallecido_hospital_direccion' => '',
+    'fallecido_dom_velacion' => '',
     'contratante_nombre' => '',
     'contratante_tel' => '',
     'contratante_email' => '',
     'contratante_direccion' => '',
-    'id_fallecido' => '',
-    'nom_fallecido' => '',
-    'notas' => '',
+    'tipo_servicio' => 'funerario',
+    'tipo_disposicion' => 'inhumacion',
+    'responsable' => '',
     'origen_tipo' => 'directo',
     'id_contrato_futuro' => '',
+    'id_usuario_vendedor' => '',
     'fecha_hora_programada' => '',
     'lugar_tipo' => 'capilla',
     'lugar_detalle' => '',
-    'id_usuario_vendedor' => '',
     'id_usuario_auxiliar' => '',
+    'auxiliares' => '',
     'monto_total' => '0.00',
     'anticipo_inicial' => '0.00',
     'forma_pago_inicial' => 'efectivo',
     'requiere_factura' => 0,
     'observaciones_comerciales' => '',
+    'notas' => '',
   ];
 }
 
@@ -50,15 +60,72 @@ function servicios_form_values(array $source): array {
   if (!empty($source['fecha_hora_programada'])) {
     $values['fecha_hora_programada'] = so_datetime_to_input($source['fecha_hora_programada']);
   }
+  if (!empty($source['fallecido_fecha'])) {
+    $values['fallecido_fecha'] = servicios_date_to_input($source['fallecido_fecha']);
+  }
   if (!empty($source['fallecido'])) {
-    $values['nom_fallecido'] = $source['fallecido'];
+    $values['fallecido_nombre'] = $source['fallecido'];
   }
   $values['requiere_factura'] = !empty($source['requiere_factura']) ? 1 : 0;
   return $values;
 }
 
+function servicios_collect_form_data(): array {
+  $origenTipo = trim($_POST['origen_tipo'] ?? 'directo');
+  if ($origenTipo !== 'futuro') {
+    $origenTipo = 'directo';
+  }
+
+  return [
+    'fallecido_nombre' => trim($_POST['fallecido_nombre'] ?? ''),
+    'fallecido_fecha' => trim($_POST['fallecido_fecha'] ?? '') ?: null,
+    'fallecido_municipio' => trim($_POST['fallecido_municipio'] ?? ''),
+    'fallecido_hospital' => trim($_POST['fallecido_hospital'] ?? '') ?: null,
+    'fallecido_hospital_direccion' => trim($_POST['fallecido_hospital_direccion'] ?? '') ?: null,
+    'fallecido_dom_velacion' => trim($_POST['fallecido_dom_velacion'] ?? ''),
+    'contratante_nombre' => trim($_POST['contratante_nombre'] ?? ''),
+    'contratante_tel' => trim($_POST['contratante_tel'] ?? '') ?: null,
+    'contratante_email' => trim($_POST['contratante_email'] ?? '') ?: null,
+    'contratante_direccion' => trim($_POST['contratante_direccion'] ?? '') ?: null,
+    'tipo_servicio' => trim($_POST['tipo_servicio'] ?? ''),
+    'tipo_disposicion' => trim($_POST['tipo_disposicion'] ?? ''),
+    'responsable' => trim($_POST['responsable'] ?? ''),
+    'origen_tipo' => $origenTipo,
+    'id_contrato_futuro' => $origenTipo === 'futuro' ? ((int)($_POST['id_contrato_futuro'] ?? 0) ?: null) : null,
+    'id_usuario_vendedor' => (int)($_POST['id_usuario_vendedor'] ?? 0) ?: null,
+    'fecha_hora_programada' => trim($_POST['fecha_hora_programada'] ?? '') ?: null,
+    'lugar_tipo' => trim($_POST['lugar_tipo'] ?? '') ?: null,
+    'lugar_detalle' => trim($_POST['lugar_detalle'] ?? '') ?: null,
+    'id_usuario_auxiliar' => (int)($_POST['id_usuario_auxiliar'] ?? 0) ?: null,
+    'auxiliares' => trim($_POST['auxiliares'] ?? ''),
+    'monto_total' => so_parse_money($_POST['monto_total'] ?? 0),
+    'anticipo_inicial' => so_parse_money($_POST['anticipo_inicial'] ?? 0),
+    'forma_pago_inicial' => trim($_POST['forma_pago_inicial'] ?? 'efectivo'),
+    'requiere_factura' => so_parse_checkbox($_POST['requiere_factura'] ?? null),
+    'observaciones_comerciales' => trim($_POST['observaciones_comerciales'] ?? '') ?: null,
+    'notas' => trim($_POST['notas'] ?? '') ?: null,
+  ];
+}
+
+function servicios_validate_form_data(array $data): ?string {
+  if (
+    $data['fallecido_nombre'] === '' ||
+    $data['fallecido_municipio'] === '' ||
+    $data['fallecido_dom_velacion'] === '' ||
+    $data['tipo_servicio'] === '' ||
+    $data['tipo_disposicion'] === '' ||
+    $data['responsable'] === '' ||
+    $data['contratante_nombre'] === ''
+  ) {
+    return 'Completa los campos obligatorios del fallecido, contratante y servicio.';
+  }
+  if ($data['origen_tipo'] === 'futuro' && empty($data['id_contrato_futuro'])) {
+    return 'Selecciona el contrato de futuros relacionado.';
+  }
+  return null;
+}
+
 function servicios_render_form(string $title, string $actionUrl, array $values, bool $isEdit = false, array $svc = []): void {
-  $fallecidos = so_fallecidos_options();
   $contratos = so_contratos_futuros_options();
   $vendedores = so_user_options(['administradora','vendedor']);
   $auxiliares = so_user_options(['administradora','auxiliar','coordinador']);
@@ -66,83 +133,123 @@ function servicios_render_form(string $title, string $actionUrl, array $values, 
 
   ob_start(); ?>
   <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-2 mb-3">
-    <h1 class="h4 m-0"><?= e($title) ?></h1>
+    <div>
+      <h1 class="h4 m-0"><?= e($title) ?></h1>
+      <div class="text-muted small">Captura organizada por secciones para registrar el servicio completo en una sola pantalla.</div>
+    </div>
     <a class="btn btn-light btn-sm" href="?r=servicios.listar">Volver</a>
   </div>
 
-  <div class="card shadow-sm">
-    <div class="card-body">
-      <form method="post" action="<?= e($actionUrl) ?>">
-        <?= csrf_field() ?>
+  <form method="post" action="<?= e($actionUrl) ?>">
+    <?= csrf_field() ?>
+
+    <div class="card shadow-sm mb-3">
+      <div class="card-body">
+        <h2 class="h6 mb-3">1. Datos del fallecido</h2>
         <div class="row g-3">
-          <div class="col-lg-4">
-            <h2 class="h6 mb-3">Datos del servicio</h2>
-            <?= form_select('tipo_servicio','Tipo de servicio',[
-              'funerario' => 'Funerario',
-              'capilla' => 'Capilla',
-              'traslado' => 'Traslado',
-              'otro' => 'Otro',
-            ],$values['tipo_servicio'],['class'=>'form-select','required'=>true]) ?>
-            <?= form_select('tipo_disposicion','Tipo de disposicion',[
-              'cremacion' => 'Cremacion',
-              'inhumacion' => 'Inhumacion',
-            ],$values['tipo_disposicion'],['class'=>'form-select','required'=>true]) ?>
-            <?= form_input('responsable','Responsable general',$values['responsable'],['required'=>true]) ?>
-            <?= form_input('auxiliares','Auxiliares (texto libre)',$values['auxiliares']) ?>
-            <?= form_input('fecha_hora_programada','Fecha y hora programada',$values['fecha_hora_programada'],['type'=>'datetime-local']) ?>
-            <?= form_select('lugar_tipo','Lugar de velacion',so_lugar_tipo_options(),$values['lugar_tipo'],['class'=>'form-select']) ?>
-            <?= form_input('lugar_detalle','Detalle del lugar',$values['lugar_detalle'],['placeholder'=>'Capilla, domicilio o iglesia']) ?>
-          </div>
+          <div class="col-lg-6"><?= form_input('fallecido_nombre','Nombre del fallecido',$values['fallecido_nombre'],['required'=>true]) ?></div>
+          <div class="col-lg-3"><?= form_input('fallecido_fecha','Fecha del fallecimiento',$values['fallecido_fecha'],['type'=>'date']) ?></div>
+          <div class="col-lg-3"><?= form_input('fallecido_municipio','Municipio',$values['fallecido_municipio'],['required'=>true]) ?></div>
+          <div class="col-lg-6"><?= form_input('fallecido_hospital','Hospital',$values['fallecido_hospital']) ?></div>
+          <div class="col-lg-6"><?= form_input('fallecido_hospital_direccion','Direccion del hospital',$values['fallecido_hospital_direccion']) ?></div>
+          <div class="col-12"><?= form_input('fallecido_dom_velacion','Domicilio de velacion',$values['fallecido_dom_velacion'],['required'=>true]) ?></div>
+        </div>
+      </div>
+    </div>
 
-          <div class="col-lg-4">
-            <h2 class="h6 mb-3">Cliente y origen</h2>
-            <?= form_input('contratante_nombre','Contratante',$values['contratante_nombre'],['required'=>true]) ?>
-            <?= form_input('contratante_tel','Telefono',$values['contratante_tel']) ?>
-            <?= form_input('contratante_email','Correo',$values['contratante_email'],['type'=>'email']) ?>
-            <?= form_input('contratante_direccion','Direccion',$values['contratante_direccion']) ?>
-            <?= form_select('origen_tipo','Origen del servicio',[
-              'directo' => 'Directo',
-              'futuro' => 'Derivado de futuros',
-            ],$values['origen_tipo'],['class'=>'form-select','required'=>true]) ?>
-            <?= form_select('id_contrato_futuro','Contrato de futuros relacionado',$contratos,(string)$values['id_contrato_futuro'],['class'=>'form-select']) ?>
-            <?= form_select('id_usuario_vendedor','Vendedor / Promotor',$vendedores,(string)$values['id_usuario_vendedor'],['class'=>'form-select']) ?>
-            <?= form_select('id_usuario_auxiliar','Auxiliar principal',$auxiliares,(string)$values['id_usuario_auxiliar'],['class'=>'form-select']) ?>
-          </div>
+    <div class="card shadow-sm mb-3">
+      <div class="card-body">
+        <h2 class="h6 mb-3">2. Contratante y contacto</h2>
+        <div class="row g-3">
+          <div class="col-lg-6"><?= form_input('contratante_nombre','Contratante',$values['contratante_nombre'],['required'=>true]) ?></div>
+          <div class="col-lg-3"><?= form_input('contratante_tel','Telefono',$values['contratante_tel']) ?></div>
+          <div class="col-lg-3"><?= form_input('contratante_email','Correo',$values['contratante_email'],['type'=>'email']) ?></div>
+          <div class="col-12"><?= form_input('contratante_direccion','Direccion',$values['contratante_direccion']) ?></div>
+        </div>
+      </div>
+    </div>
 
-          <div class="col-lg-4">
-            <h2 class="h6 mb-3">Fallecido y pagos</h2>
-            <?= form_select('id_fallecido','Fallecido existente',$fallecidos,(string)$values['id_fallecido'],['class'=>'form-select']) ?>
-            <?= form_input('nom_fallecido','Nombre del fallecido (si es nuevo)',$values['nom_fallecido']) ?>
-            <?= form_input('monto_total','Monto total',$values['monto_total'],['type'=>'number','step'=>'0.01','min'=>'0']) ?>
+    <div class="card shadow-sm mb-3">
+      <div class="card-body">
+        <h2 class="h6 mb-3">3. Datos del servicio</h2>
+        <div class="row g-3">
+          <div class="col-lg-3"><?= form_select('tipo_servicio','Tipo de servicio',[
+            'funerario' => 'Funerario',
+            'capilla' => 'Capilla',
+            'traslado' => 'Traslado',
+            'otro' => 'Otro',
+          ],$values['tipo_servicio'],['class'=>'form-select','required'=>true]) ?></div>
+          <div class="col-lg-3"><?= form_select('tipo_disposicion','Tipo de disposicion',[
+            'cremacion' => 'Cremacion',
+            'inhumacion' => 'Inhumacion',
+          ],$values['tipo_disposicion'],['class'=>'form-select','required'=>true]) ?></div>
+          <div class="col-lg-3"><?= form_select('origen_tipo','Origen del servicio',[
+            'directo' => 'Directo',
+            'futuro' => 'Derivado de futuros',
+          ],$values['origen_tipo'],['class'=>'form-select','required'=>true]) ?></div>
+          <div class="col-lg-3"><?= form_select('id_contrato_futuro','Contrato de futuros relacionado',$contratos,(string)$values['id_contrato_futuro'],['class'=>'form-select','placeholder'=>'Sin vincular']) ?></div>
+          <div class="col-lg-4"><?= form_input('responsable','Responsable general',$values['responsable'],['required'=>true]) ?></div>
+          <div class="col-lg-4"><?= form_select('id_usuario_vendedor','Vendedor / Promotor',$vendedores,(string)$values['id_usuario_vendedor'],['class'=>'form-select']) ?></div>
+          <div class="col-lg-4"><?= form_input('auxiliares','Auxiliares (texto libre)',$values['auxiliares']) ?></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card shadow-sm mb-3">
+      <div class="card-body">
+        <h2 class="h6 mb-3">4. Programacion y logistica</h2>
+        <div class="row g-3">
+          <div class="col-lg-4"><?= form_input('fecha_hora_programada','Fecha y hora programada',$values['fecha_hora_programada'],['type'=>'datetime-local']) ?></div>
+          <div class="col-lg-4"><?= form_select('lugar_tipo','Lugar de velacion',so_lugar_tipo_options(),$values['lugar_tipo'],['class'=>'form-select']) ?></div>
+          <div class="col-lg-4"><?= form_select('id_usuario_auxiliar','Auxiliar principal',$auxiliares,(string)$values['id_usuario_auxiliar'],['class'=>'form-select']) ?></div>
+          <div class="col-12"><?= form_input('lugar_detalle','Detalle del lugar',$values['lugar_detalle'],['placeholder'=>'Capilla, domicilio o iglesia']) ?></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card shadow-sm mb-3">
+      <div class="card-body">
+        <h2 class="h6 mb-3">5. Importe y facturacion</h2>
+        <div class="row g-3">
+          <div class="col-lg-3"><?= form_input('monto_total','Monto total',$values['monto_total'],['type'=>'number','step'=>'0.01','min'=>'0']) ?></div>
+          <div class="col-lg-3">
             <?php if (!$isEdit): ?>
               <?= form_input('anticipo_inicial','Anticipo inicial',$values['anticipo_inicial'],['type'=>'number','step'=>'0.01','min'=>'0']) ?>
             <?php else: ?>
-              <div class="alert alert-light">
+              <label class="form-label d-block">Estado de pago</label>
+              <div class="alert alert-light mb-0">
                 Pagado actual: <strong><?= e(so_moneda($totales['pagado'])) ?></strong><br>
                 Saldo pendiente: <strong><?= e(so_moneda($totales['saldo'])) ?></strong>
               </div>
             <?php endif; ?>
-            <?= form_select('forma_pago_inicial','Forma de pago inicial',so_servicio_tipo_pago_options(),$values['forma_pago_inicial'],['class'=>'form-select']) ?>
-            <div class="form-check mt-3 mb-3">
+          </div>
+          <div class="col-lg-3"><?= form_select('forma_pago_inicial','Forma de pago inicial',so_servicio_tipo_pago_options(),$values['forma_pago_inicial'],['class'=>'form-select']) ?></div>
+          <div class="col-lg-3 d-flex align-items-center">
+            <div class="form-check mt-4">
               <input class="form-check-input" type="checkbox" name="requiere_factura" id="requiere_factura" value="1" <?= !empty($values['requiere_factura']) ? 'checked' : '' ?>>
               <label class="form-check-label" for="requiere_factura">Requiere factura</label>
             </div>
-            <?= form_input('observaciones_comerciales','Observaciones comerciales',$values['observaciones_comerciales']) ?>
           </div>
+          <div class="col-12"><?= form_input('observaciones_comerciales','Observaciones comerciales',$values['observaciones_comerciales']) ?></div>
         </div>
+      </div>
+    </div>
 
-        <div class="mt-2">
-          <label class="form-label" for="notas">Notas operativas</label>
+    <div class="card shadow-sm">
+      <div class="card-body">
+        <h2 class="h6 mb-3">6. Notas operativas</h2>
+        <div class="mb-0">
+          <label class="form-label" for="notas">Notas</label>
           <textarea class="form-control" name="notas" id="notas" rows="4"><?= e($values['notas']) ?></textarea>
         </div>
-
-        <div class="d-flex gap-2 mt-4">
-          <button class="btn btn-primary"><?= $isEdit ? 'Actualizar servicio' : 'Guardar servicio' ?></button>
-          <a class="btn btn-outline-secondary" href="?r=servicios.listar">Cancelar</a>
-        </div>
-      </form>
+      </div>
     </div>
-  </div>
+
+    <div class="d-flex gap-2 mt-4">
+      <button class="btn btn-primary"><?= $isEdit ? 'Actualizar servicio' : 'Guardar servicio' ?></button>
+      <a class="btn btn-outline-secondary" href="?r=servicios.listar">Cancelar</a>
+    </div>
+  </form>
   <?php
   render($title, ob_get_clean());
 }
@@ -166,7 +273,7 @@ case 'listar':
   }
   if ($q !== '') {
     $like = '%'.$q.'%';
-    $where[] = "(s.folio LIKE ? OR s.contratante_nombre LIKE ? OR s.responsable LIKE ? OR COALESCE(f.nom_fallecido,'') LIKE ? OR s.id_servicio = ?)";
+    $where[] = "(s.folio LIKE ? OR s.contratante_nombre LIKE ? OR s.responsable LIKE ? OR COALESCE(s.fallecido_nombre,'') LIKE ? OR s.id_servicio = ?)";
     array_push($params, $like, $like, $like, $like, ctype_digit($q) ? (int)$q : -1);
   }
 
@@ -174,10 +281,8 @@ case 'listar':
     SELECT s.id_servicio, s.folio, s.estatus, s.origen_tipo, s.tipo_servicio, s.tipo_disposicion,
            s.contratante_nombre, s.responsable, s.fecha_hora_programada, s.monto_total, s.saldo_pendiente,
            DATE(s.created_at) AS fecha,
-           COALESCE(f.nom_fallecido,'') AS fallecido
+           COALESCE(s.fallecido_nombre,'') AS fallecido
     FROM servicios s
-    LEFT JOIN servicio_fallecido sf ON sf.id_servicio=s.id_servicio
-    LEFT JOIN fallecido f ON f.id_fallecido=sf.id_fallecido
     WHERE ".implode(' AND ', $where)."
     ORDER BY COALESCE(s.fecha_hora_programada, s.created_at) DESC, s.id_servicio DESC
     LIMIT 300
@@ -260,41 +365,10 @@ case 'nuevo':
 
 case 'guardar':
   try { csrf_verify(); } catch (RuntimeException $e) { flash("<div class='alert alert-danger'>Sesion invalida.</div>"); redirect('servicios.nuevo'); }
-
-  $tipo_servicio = trim($_POST['tipo_servicio'] ?? '');
-  $tipo_disposicion = trim($_POST['tipo_disposicion'] ?? '');
-  $responsable = trim($_POST['responsable'] ?? '');
-  $auxiliares = trim($_POST['auxiliares'] ?? '');
-  $contratante = trim($_POST['contratante_nombre'] ?? '');
-  $tel = trim($_POST['contratante_tel'] ?? '') ?: null;
-  $email = trim($_POST['contratante_email'] ?? '') ?: null;
-  $direccion = trim($_POST['contratante_direccion'] ?? '') ?: null;
-  $id_fallecido = (int)($_POST['id_fallecido'] ?? 0);
-  $nom_fallecido = trim($_POST['nom_fallecido'] ?? '');
-  $notas = trim($_POST['notas'] ?? '') ?: null;
-  $origen_tipo = trim($_POST['origen_tipo'] ?? 'directo');
-  $id_contrato_futuro = (int)($_POST['id_contrato_futuro'] ?? 0) ?: null;
-  $fecha_hora_programada = trim($_POST['fecha_hora_programada'] ?? '') ?: null;
-  $lugar_tipo = trim($_POST['lugar_tipo'] ?? '') ?: null;
-  $lugar_detalle = trim($_POST['lugar_detalle'] ?? '') ?: null;
-  $id_usuario_vendedor = (int)($_POST['id_usuario_vendedor'] ?? 0) ?: null;
-  $id_usuario_auxiliar = (int)($_POST['id_usuario_auxiliar'] ?? 0) ?: null;
-  $monto_total = so_parse_money($_POST['monto_total'] ?? 0);
-  $anticipo_inicial = so_parse_money($_POST['anticipo_inicial'] ?? 0);
-  $forma_pago_inicial = trim($_POST['forma_pago_inicial'] ?? 'efectivo');
-  $requiere_factura = so_parse_checkbox($_POST['requiere_factura'] ?? null);
-  $observaciones_comerciales = trim($_POST['observaciones_comerciales'] ?? '') ?: null;
-
-  if ($tipo_servicio === '' || $tipo_disposicion === '' || $responsable === '' || $contratante === '') {
-    flash("<div class='alert alert-danger'>Completa los campos obligatorios.</div>");
-    redirect('servicios.nuevo');
-  }
-  if ($origen_tipo !== 'futuro') {
-    $origen_tipo = 'directo';
-    $id_contrato_futuro = null;
-  }
-  if ($origen_tipo === 'futuro' && !$id_contrato_futuro) {
-    flash("<div class='alert alert-danger'>Selecciona el contrato de futuros relacionado.</div>");
+  $data = servicios_collect_form_data();
+  $error = servicios_validate_form_data($data);
+  if ($error) {
+    flash("<div class='alert alert-danger'>".e($error)."</div>");
     redirect('servicios.nuevo');
   }
 
@@ -302,52 +376,55 @@ case 'guardar':
   try {
     $pdo->beginTransaction();
     $folio = so_generar_folio($pdo);
-    $id_fallecido = so_fallecido_resolver($pdo, $id_fallecido, $nom_fallecido);
 
     q("
       INSERT INTO servicios (
         folio, tipo_servicio, tipo_disposicion, responsable, auxiliares,
         contratante_nombre, contratante_tel, contratante_email, contratante_direccion,
+        fallecido_nombre, fallecido_fecha, fallecido_municipio, fallecido_hospital,
+        fallecido_hospital_direccion, fallecido_dom_velacion,
         notas, origen_tipo, id_contrato_futuro, estatus, fecha_hora_programada,
         lugar_tipo, lugar_detalle, id_usuario_vendedor, id_usuario_auxiliar,
         monto_total, anticipo, saldo_pendiente, forma_pago_inicial, requiere_factura,
         observaciones_comerciales, eliminado, created_at, updated_at
       ) VALUES (
-        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'registrado', ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP()
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'registrado', ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP()
       )
     ", [
-      $folio, $tipo_servicio, $tipo_disposicion, $responsable, $auxiliares,
-      $contratante, $tel, $email, $direccion,
-      $notas, $origen_tipo, $id_contrato_futuro, $fecha_hora_programada,
-      $lugar_tipo, $lugar_detalle, $id_usuario_vendedor, $id_usuario_auxiliar,
-      $monto_total, $monto_total, $forma_pago_inicial ?: null, $requiere_factura, $observaciones_comerciales
+      $folio, $data['tipo_servicio'], $data['tipo_disposicion'], $data['responsable'], $data['auxiliares'],
+      $data['contratante_nombre'], $data['contratante_tel'], $data['contratante_email'], $data['contratante_direccion'],
+      $data['fallecido_nombre'], $data['fallecido_fecha'], $data['fallecido_municipio'], $data['fallecido_hospital'],
+      $data['fallecido_hospital_direccion'], $data['fallecido_dom_velacion'],
+      $data['notas'], $data['origen_tipo'], $data['id_contrato_futuro'], $data['fecha_hora_programada'],
+      $data['lugar_tipo'], $data['lugar_detalle'], $data['id_usuario_vendedor'], $data['id_usuario_auxiliar'],
+      $data['monto_total'], $data['monto_total'], $data['forma_pago_inicial'] ?: null, $data['requiere_factura'], $data['observaciones_comerciales']
     ]);
     $id_servicio = (int)$pdo->lastInsertId();
-    q("INSERT INTO servicio_fallecido (id_fallecido,id_servicio) VALUES (?,?)", [$id_fallecido, $id_servicio]);
 
-    if ($fecha_hora_programada || $lugar_tipo || $lugar_detalle || $id_usuario_auxiliar) {
+    if ($data['fecha_hora_programada'] || $data['lugar_tipo'] || $data['lugar_detalle'] || $data['id_usuario_auxiliar']) {
       so_guardar_asignacion($id_servicio, [
-        'fecha_hora_inicio' => $fecha_hora_programada,
-        'lugar_tipo' => $lugar_tipo,
-        'lugar_detalle' => $lugar_detalle,
-        'id_usuario_auxiliar' => $id_usuario_auxiliar,
+        'fecha_hora_inicio' => $data['fecha_hora_programada'],
+        'lugar_tipo' => $data['lugar_tipo'],
+        'lugar_detalle' => $data['lugar_detalle'],
+        'id_usuario_auxiliar' => $data['id_usuario_auxiliar'],
         'id_vehiculo' => null,
         'id_sala' => null,
-        'instrucciones' => $notas,
+        'instrucciones' => $data['notas'],
       ]);
       q("UPDATE servicios SET estatus='registrado' WHERE id_servicio=?", [$id_servicio]);
     }
 
-    if ($anticipo_inicial > 0) {
-      so_guardar_pago($pdo, $id_servicio, $anticipo_inicial, $forma_pago_inicial, 'anticipo', null, 'Anticipo inicial del servicio');
+    if ($data['anticipo_inicial'] > 0) {
+      so_guardar_pago($pdo, $id_servicio, $data['anticipo_inicial'], $data['forma_pago_inicial'], 'anticipo', null, 'Anticipo inicial del servicio');
     } else {
       so_recalcular_saldo($id_servicio);
     }
 
     so_log_bitacora($id_servicio, 'creacion', 'Servicio creado', [
       'folio' => $folio,
-      'origen_tipo' => $origen_tipo,
-      'monto_total' => $monto_total,
+      'origen_tipo' => $data['origen_tipo'],
+      'monto_total' => $data['monto_total'],
+      'fallecido_nombre' => $data['fallecido_nombre'],
     ]);
 
     $pdo->commit();
@@ -378,74 +455,49 @@ case 'actualizar':
     redirect('servicios.listar');
   }
   try { csrf_verify(); } catch (RuntimeException $e) { flash("<div class='alert alert-danger'>Sesion invalida.</div>"); redirect('servicios.editar&id='.$id); }
-
-  $tipo_servicio = trim($_POST['tipo_servicio'] ?? '');
-  $tipo_disposicion = trim($_POST['tipo_disposicion'] ?? '');
-  $responsable = trim($_POST['responsable'] ?? '');
-  $auxiliares = trim($_POST['auxiliares'] ?? '');
-  $contratante = trim($_POST['contratante_nombre'] ?? '');
-  $tel = trim($_POST['contratante_tel'] ?? '') ?: null;
-  $email = trim($_POST['contratante_email'] ?? '') ?: null;
-  $direccion = trim($_POST['contratante_direccion'] ?? '') ?: null;
-  $id_fallecido = (int)($_POST['id_fallecido'] ?? 0);
-  $nom_fallecido = trim($_POST['nom_fallecido'] ?? '');
-  $notas = trim($_POST['notas'] ?? '') ?: null;
-  $origen_tipo = trim($_POST['origen_tipo'] ?? 'directo');
-  $id_contrato_futuro = (int)($_POST['id_contrato_futuro'] ?? 0) ?: null;
-  $fecha_hora_programada = trim($_POST['fecha_hora_programada'] ?? '') ?: null;
-  $lugar_tipo = trim($_POST['lugar_tipo'] ?? '') ?: null;
-  $lugar_detalle = trim($_POST['lugar_detalle'] ?? '') ?: null;
-  $id_usuario_vendedor = (int)($_POST['id_usuario_vendedor'] ?? 0) ?: null;
-  $id_usuario_auxiliar = (int)($_POST['id_usuario_auxiliar'] ?? 0) ?: null;
-  $monto_total = so_parse_money($_POST['monto_total'] ?? 0);
-  $forma_pago_inicial = trim($_POST['forma_pago_inicial'] ?? 'efectivo');
-  $requiere_factura = so_parse_checkbox($_POST['requiere_factura'] ?? null);
-  $observaciones_comerciales = trim($_POST['observaciones_comerciales'] ?? '') ?: null;
-
-  if ($tipo_servicio === '' || $tipo_disposicion === '' || $responsable === '' || $contratante === '') {
-    flash("<div class='alert alert-danger'>Completa los campos obligatorios.</div>");
+  $data = servicios_collect_form_data();
+  $error = servicios_validate_form_data($data);
+  if ($error) {
+    flash("<div class='alert alert-danger'>".e($error)."</div>");
     redirect('servicios.editar&id='.$id);
-  }
-  if ($origen_tipo !== 'futuro') {
-    $origen_tipo = 'directo';
-    $id_contrato_futuro = null;
   }
 
   $pdo = db();
   try {
     $pdo->beginTransaction();
-    $id_fallecido = so_fallecido_resolver($pdo, $id_fallecido, $nom_fallecido ?: ($svc['fallecido'] ?? ''));
     q("
       UPDATE servicios
       SET tipo_servicio=?, tipo_disposicion=?, responsable=?, auxiliares=?,
           contratante_nombre=?, contratante_tel=?, contratante_email=?, contratante_direccion=?,
+          fallecido_nombre=?, fallecido_fecha=?, fallecido_municipio=?, fallecido_hospital=?,
+          fallecido_hospital_direccion=?, fallecido_dom_velacion=?,
           notas=?, origen_tipo=?, id_contrato_futuro=?, fecha_hora_programada=?,
           lugar_tipo=?, lugar_detalle=?, id_usuario_vendedor=?, id_usuario_auxiliar=?,
           monto_total=?, forma_pago_inicial=?, requiere_factura=?, observaciones_comerciales=?,
           updated_at=CURRENT_TIMESTAMP()
       WHERE id_servicio=?
     ", [
-      $tipo_servicio, $tipo_disposicion, $responsable, $auxiliares,
-      $contratante, $tel, $email, $direccion,
-      $notas, $origen_tipo, $id_contrato_futuro, $fecha_hora_programada,
-      $lugar_tipo, $lugar_detalle, $id_usuario_vendedor, $id_usuario_auxiliar,
-      $monto_total, $forma_pago_inicial, $requiere_factura, $observaciones_comerciales,
+      $data['tipo_servicio'], $data['tipo_disposicion'], $data['responsable'], $data['auxiliares'],
+      $data['contratante_nombre'], $data['contratante_tel'], $data['contratante_email'], $data['contratante_direccion'],
+      $data['fallecido_nombre'], $data['fallecido_fecha'], $data['fallecido_municipio'], $data['fallecido_hospital'],
+      $data['fallecido_hospital_direccion'], $data['fallecido_dom_velacion'],
+      $data['notas'], $data['origen_tipo'], $data['id_contrato_futuro'], $data['fecha_hora_programada'],
+      $data['lugar_tipo'], $data['lugar_detalle'], $data['id_usuario_vendedor'], $data['id_usuario_auxiliar'],
+      $data['monto_total'], $data['forma_pago_inicial'], $data['requiere_factura'], $data['observaciones_comerciales'],
       $id
     ]);
     so_guardar_asignacion($id, [
-      'fecha_hora_inicio' => $fecha_hora_programada,
-      'lugar_tipo' => $lugar_tipo,
-      'lugar_detalle' => $lugar_detalle,
-      'id_usuario_auxiliar' => $id_usuario_auxiliar,
+      'fecha_hora_inicio' => $data['fecha_hora_programada'],
+      'lugar_tipo' => $data['lugar_tipo'],
+      'lugar_detalle' => $data['lugar_detalle'],
+      'id_usuario_auxiliar' => $data['id_usuario_auxiliar'],
       'id_vehiculo' => $svc['id_vehiculo'] ?? null,
       'id_sala' => $svc['id_sala'] ?? null,
-      'instrucciones' => $notas,
+      'instrucciones' => $data['notas'],
     ]);
     q("UPDATE servicios SET estatus=? WHERE id_servicio=?", [$svc['estatus_norm'], $id]);
-    q("DELETE FROM servicio_fallecido WHERE id_servicio=?", [$id]);
-    q("INSERT INTO servicio_fallecido (id_fallecido,id_servicio) VALUES (?,?)", [$id_fallecido, $id]);
     so_recalcular_saldo($id);
-    so_log_bitacora($id, 'actualizacion', 'Servicio actualizado', ['monto_total' => $monto_total, 'id_fallecido' => $id_fallecido]);
+    so_log_bitacora($id, 'actualizacion', 'Servicio actualizado', ['monto_total' => $data['monto_total'], 'fallecido_nombre' => $data['fallecido_nombre']]);
     $pdo->commit();
   } catch (Throwable $e) {
     if ($pdo->inTransaction()) $pdo->rollBack();
@@ -517,28 +569,44 @@ case 'ver':
   </div>
 
   <div class="row g-3">
-    <div class="col-lg-6">
+    <div class="col-lg-4">
       <div class="card shadow-sm h-100">
         <div class="card-body">
-          <h2 class="h6 mb-3">Datos generales</h2>
+          <h2 class="h6 mb-3">Datos del fallecido</h2>
           <dl class="row mb-0">
-            <dt class="col-sm-4">Folio</dt><dd class="col-sm-8"><?= e($svc['folio']) ?></dd>
-            <dt class="col-sm-4">Fecha</dt><dd class="col-sm-8"><?= e(date('Y-m-d H:i', strtotime($svc['created_at']))) ?></dd>
-            <dt class="col-sm-4">Origen</dt><dd class="col-sm-8"><?= e($svc['origen_tipo']) ?><?= $svc['id_contrato_futuro'] ? ' · Contrato #'.e($svc['id_contrato_futuro']) : '' ?></dd>
-            <dt class="col-sm-4">Tipo</dt><dd class="col-sm-8"><?= e($svc['tipo_servicio']) ?> / <?= e($svc['tipo_disposicion']) ?></dd>
-            <dt class="col-sm-4">Responsable</dt><dd class="col-sm-8"><?= e($svc['responsable']) ?></dd>
-            <dt class="col-sm-4">Vendedor</dt><dd class="col-sm-8"><?= e($svc['vendedor_nombre'] ?: '—') ?></dd>
-            <dt class="col-sm-4">Auxiliar</dt><dd class="col-sm-8"><?= e($svc['auxiliar_nombre'] ?: '—') ?></dd>
-            <dt class="col-sm-4">Contratante</dt><dd class="col-sm-8"><?= e($svc['contratante_nombre']) ?></dd>
-            <dt class="col-sm-4">Contacto</dt><dd class="col-sm-8"><?= e($svc['contratante_tel'] ?: '—') ?> / <?= e($svc['contratante_email'] ?: '—') ?></dd>
-            <dt class="col-sm-4">Direccion</dt><dd class="col-sm-8"><?= e($svc['contratante_direccion'] ?: '—') ?></dd>
-            <dt class="col-sm-4">Factura</dt><dd class="col-sm-8"><?= !empty($svc['requiere_factura']) ? 'Si' : 'No' ?></dd>
+            <dt class="col-sm-5">Nombre</dt><dd class="col-sm-7"><?= e($svc['fallecido'] ?: '—') ?></dd>
+            <dt class="col-sm-5">Fecha</dt><dd class="col-sm-7"><?= e($svc['fallecido_fecha'] ?: '—') ?></dd>
+            <dt class="col-sm-5">Municipio</dt><dd class="col-sm-7"><?= e($svc['fallecido_municipio'] ?: '—') ?></dd>
+            <dt class="col-sm-5">Hospital</dt><dd class="col-sm-7"><?= e($svc['fallecido_hospital'] ?: '—') ?></dd>
+            <dt class="col-sm-5">Dir. hospital</dt><dd class="col-sm-7"><?= e($svc['fallecido_hospital_direccion'] ?: '—') ?></dd>
+            <dt class="col-sm-5">Velacion</dt><dd class="col-sm-7"><?= e($svc['fallecido_dom_velacion'] ?: '—') ?></dd>
           </dl>
         </div>
       </div>
     </div>
 
-    <div class="col-lg-6">
+    <div class="col-lg-4">
+      <div class="card shadow-sm h-100">
+        <div class="card-body">
+          <h2 class="h6 mb-3">Datos generales</h2>
+          <dl class="row mb-0">
+            <dt class="col-sm-5">Folio</dt><dd class="col-sm-7"><?= e($svc['folio']) ?></dd>
+            <dt class="col-sm-5">Fecha</dt><dd class="col-sm-7"><?= e(date('Y-m-d H:i', strtotime($svc['created_at']))) ?></dd>
+            <dt class="col-sm-5">Origen</dt><dd class="col-sm-7"><?= e($svc['origen_tipo']) ?><?= $svc['id_contrato_futuro'] ? ' · Contrato #'.e($svc['id_contrato_futuro']) : '' ?></dd>
+            <dt class="col-sm-5">Tipo</dt><dd class="col-sm-7"><?= e($svc['tipo_servicio']) ?> / <?= e($svc['tipo_disposicion']) ?></dd>
+            <dt class="col-sm-5">Responsable</dt><dd class="col-sm-7"><?= e($svc['responsable']) ?></dd>
+            <dt class="col-sm-5">Vendedor</dt><dd class="col-sm-7"><?= e($svc['vendedor_nombre'] ?: '—') ?></dd>
+            <dt class="col-sm-5">Auxiliar</dt><dd class="col-sm-7"><?= e($svc['auxiliar_nombre'] ?: '—') ?></dd>
+            <dt class="col-sm-5">Contratante</dt><dd class="col-sm-7"><?= e($svc['contratante_nombre']) ?></dd>
+            <dt class="col-sm-5">Contacto</dt><dd class="col-sm-7"><?= e($svc['contratante_tel'] ?: '—') ?> / <?= e($svc['contratante_email'] ?: '—') ?></dd>
+            <dt class="col-sm-5">Direccion</dt><dd class="col-sm-7"><?= e($svc['contratante_direccion'] ?: '—') ?></dd>
+            <dt class="col-sm-5">Factura</dt><dd class="col-sm-7"><?= !empty($svc['requiere_factura']) ? 'Si' : 'No' ?></dd>
+          </dl>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-lg-4">
       <div class="card shadow-sm h-100">
         <div class="card-body">
           <h2 class="h6 mb-3">Etapas del servicio</h2>
@@ -568,7 +636,7 @@ case 'ver':
             <dt class="col-sm-5">Fecha programada</dt><dd class="col-sm-7"><?= e($svc['fecha_hora_programada'] ? date('Y-m-d H:i', strtotime($svc['fecha_hora_programada'])) : '—') ?></dd>
             <dt class="col-sm-5">Lugar</dt><dd class="col-sm-7"><?= e(($svc['lugar_tipo'] ?: '—').' '.($svc['lugar_detalle'] ?: '')) ?></dd>
             <dt class="col-sm-5">Seguimiento</dt><dd class="col-sm-7"><?= e($seguimiento['hora_inicio_real'] ?? 'Sin iniciar') ?><?= !empty($seguimiento['hora_fin_real']) ? ' · '.e($seguimiento['hora_fin_real']) : '' ?></dd>
-            <dt class="col-sm-5">Cierre administrativo</dt><dd class="col-sm-7"><?= !empty($cierre['fecha_cierre']) ? e($cierre['fecha_cierre']) : 'Pendiente' ?></dd>
+            <dt class="col-sm-5">Cierre</dt><dd class="col-sm-7"><?= !empty($cierre['fecha_cierre']) ? e($cierre['fecha_cierre']) : 'Pendiente' ?></dd>
             <dt class="col-sm-5">Observaciones</dt><dd class="col-sm-7"><?= e($svc['notas'] ?: '—') ?></dd>
           </dl>
         </div>
@@ -699,8 +767,7 @@ case 'cambiar_estatus':
     flash("<div class='alert alert-danger'>Estatus invalido.</div>");
     redirect('servicios.ver&id='.$id);
   }
-  q("UPDATE servicios SET estatus=?, closed_at=?, updated_at=CURRENT_TIMESTAMP() WHERE id_servicio=?",
-    [$estatus, $estatus === 'finalizado' ? so_now_local() : null, $id]);
+  iv2_update_servicio_estatus($id, $estatus, null, null);
   so_log_bitacora($id, 'cambio_estatus', 'Estatus cambiado', ['estatus' => $estatus]);
   flash("<div class='alert alert-success'>Estatus actualizado.</div>");
   redirect('servicios.ver&id='.$id);
@@ -716,37 +783,25 @@ case 'asignar_caja':
   try { csrf_verify(); } catch (RuntimeException $e) { flash("<div class='alert alert-danger'>Sesion invalida.</div>"); redirect('servicio_asignaciones.ver&id='.$id); }
   $codigo = trim($_POST['codigo'] ?? '');
   $notas = trim($_POST['notas'] ?? '');
+  $tipo_asignacion = trim($_POST['tipo_asignacion'] ?? '') ?: null;
   if ($codigo === '') {
     flash("<div class='alert alert-danger'>Selecciona un ataud.</div>");
-    redirect('servicio_asignaciones.ver&id='.$id);
-  }
-  $caja = so_caja_activa($codigo);
-  if (!$caja) {
-    flash("<div class='alert alert-danger'>Ataud no encontrado.</div>");
-    redirect('servicio_asignaciones.ver&id='.$id);
-  }
-  if (so_caja_en_uso($codigo)) {
-    flash("<div class='alert alert-warning'>El ataud ya esta asignado a otro servicio.</div>");
     redirect('servicio_asignaciones.ver&id='.$id);
   }
   $pdo = db();
   try {
     $pdo->beginTransaction();
-    q("UPDATE cajas SET estado='en_uso', reciclado=0 WHERE codigo=?", [$codigo]);
-    so_registrar_mov_caja($pdo, $codigo, 'asignacion', $id, $notas ?: null);
-    $asignacion = so_servicio_asignacion($id);
-    if ($asignacion) {
-      q("UPDATE servicio_asignacion SET codigo_caja=?, updated_at=CURRENT_TIMESTAMP() WHERE id_servicio=?", [$codigo, $id]);
-    } else {
-      q("INSERT INTO servicio_asignacion (id_servicio, codigo_caja, created_by) VALUES (?,?,?)", [$id, $codigo, so_current_user_id()]);
-    }
-    q("UPDATE servicios SET estatus='preparacion', updated_at=CURRENT_TIMESTAMP() WHERE id_servicio=?", [$id]);
-    so_log_bitacora($id, 'asignacion_caja', 'Ataud asignado', ['codigo' => $codigo]);
+    $resultado = iv2_asignar_caja($pdo, $id, $codigo, $tipo_asignacion, so_current_user_id(), $notas ?: null);
+    so_guardar_codigo_caja_asignacion($id, $codigo);
+    so_log_bitacora($id, 'asignacion_caja', 'Ataud asignado', [
+      'codigo' => $codigo,
+      'tipo_asignacion' => $resultado['tipo_asignacion'] ?? $tipo_asignacion,
+    ]);
     $pdo->commit();
     flash("<div class='alert alert-success'>Ataud asignado correctamente.</div>");
   } catch (Throwable $e) {
     if ($pdo->inTransaction()) $pdo->rollBack();
-    flash("<div class='alert alert-danger'>No se pudo asignar el ataud.</div>");
+    flash("<div class='alert alert-danger'>".e($e->getMessage())."</div>");
   }
   redirect('servicio_asignaciones.ver&id='.$id);
   break;
@@ -768,13 +823,7 @@ case 'asignar_equipo':
   $pdo = db();
   try {
     $pdo->beginTransaction();
-    $eq = qone("SELECT estatus FROM equipos WHERE id_equipo=? AND COALESCE(eliminado,0)=0 FOR UPDATE", [$id_equipo]);
-    if (!$eq || $eq['estatus'] !== 'disponible') {
-      throw new RuntimeException('El equipo no esta disponible.');
-    }
-    q("UPDATE equipos SET estatus='asignado', updated_at=CURRENT_TIMESTAMP() WHERE id_equipo=?", [$id_equipo]);
-    so_registrar_mov_equipo($pdo, $id_equipo, 'asignacion', $id, null, null, $notas ?: null);
-    q("UPDATE servicios SET estatus='preparacion', updated_at=CURRENT_TIMESTAMP() WHERE id_servicio=?", [$id]);
+    iv2_asignar_equipo($pdo, $id, $id_equipo, so_current_user_id(), $notas ?: null);
     so_log_bitacora($id, 'asignacion_equipo', 'Equipo asignado', ['id_equipo' => $id_equipo]);
     $pdo->commit();
     flash("<div class='alert alert-success'>Equipo asignado.</div>");

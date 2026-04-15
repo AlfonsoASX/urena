@@ -3,6 +3,7 @@
 require_once __DIR__.'/db.php';
 require_once __DIR__.'/helpers.php';
 require_once __DIR__.'/auth.php';
+require_once __DIR__.'/inventario_v2.php';
 
 function so_table_exists(string $table): bool {
   return db_table_exists($table);
@@ -16,9 +17,138 @@ function so_add_column_if_missing(string $table, string $column, string $ddl): v
   db_add_column_if_missing($table, $column, $ddl);
 }
 
-function so_create_tables(): void {
+function so_ensure_servicios_estatus_shape(): void {
+  static $checked = false;
+  if ($checked) return;
+  $checked = true;
+
+  if (!so_table_exists('servicios')) return;
+
+  try {
+    $meta = qone("
+      SELECT DATA_TYPE, CHARACTER_MAXIMUM_LENGTH
+      FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE()
+        AND TABLE_NAME = 'servicios'
+        AND COLUMN_NAME = 'estatus'
+      LIMIT 1
+    ");
+  } catch (Throwable $e) {
+    return;
+  }
+
+  if (!$meta) return;
+  $dataType = strtolower((string)($meta['DATA_TYPE'] ?? ''));
+  $maxLength = (int)($meta['CHARACTER_MAXIMUM_LENGTH'] ?? 0);
+  if ($dataType === 'varchar' && $maxLength >= 30) return;
+
+  try {
+    q("ALTER TABLE servicios MODIFY COLUMN estatus VARCHAR(30) NULL DEFAULT 'registrado'");
+    db_invalidate_schema_cache('servicios');
+    db_schema_snapshot_clear_file();
+  } catch (Throwable $e) {
+    db_log_error($e, ['scope' => 'ensure_servicios_estatus_shape']);
+  }
+}
+
+function so_ensure_runtime_schema_compat(): void {
+  so_ensure_servicios_estatus_shape();
+}
+
+function so_has_value($value, bool $isDate = false): bool {
+  if ($value === null) return false;
+  $text = trim((string)$value);
+  if ($text === '') return false;
+  if ($isDate) {
+    return !in_array($text, ['0000-00-00', '0000-00-00 00:00:00'], true);
+  }
+  return true;
+}
+
+function so_existing_column(string $table, array $candidates): ?string {
+  foreach ($candidates as $candidate) {
+    $candidate = trim((string)$candidate);
+    if ($candidate !== '' && db_column_exists($table, $candidate)) {
+      return $candidate;
+    }
+  }
+  return null;
+}
+
+function so_backfill_servicios_fallecidos(): void {
+  if (!so_table_exists('servicios') || !so_table_exists('servicio_fallecido') || !so_table_exists('fallecido')) return;
+  $servicioFallecidoIdColumn = so_existing_column('servicio_fallecido', ['id_rel', 'id_falle_serv']);
+  if (!$servicioFallecidoIdColumn) return;
+
+  $legacySelect = [
+    db_column_exists('fallecido', 'nom_fallecido') ? "COALESCE(f.nom_fallecido,'') AS legacy_fallecido_nombre" : "'' AS legacy_fallecido_nombre",
+    db_column_exists('fallecido', 'fecha') ? "f.fecha AS legacy_fallecido_fecha" : "NULL AS legacy_fallecido_fecha",
+    db_column_exists('fallecido', 'municipio') ? "COALESCE(f.municipio,'') AS legacy_fallecido_municipio" : "'' AS legacy_fallecido_municipio",
+    db_column_exists('fallecido', 'hospital') ? "COALESCE(f.hospital,'') AS legacy_fallecido_hospital" : "'' AS legacy_fallecido_hospital",
+    db_column_exists('fallecido', 'hospital_direccion') ? "COALESCE(f.hospital_direccion,'') AS legacy_fallecido_hospital_direccion" : "'' AS legacy_fallecido_hospital_direccion",
+    db_column_exists('fallecido', 'dom_velacion') ? "COALESCE(f.dom_velacion,'') AS legacy_fallecido_dom_velacion" : "'' AS legacy_fallecido_dom_velacion",
+  ];
+
+  try {
+    $rows = qall("
+      SELECT s.id_servicio,
+             s.fallecido_nombre, s.fallecido_fecha, s.fallecido_municipio,
+             s.fallecido_hospital, s.fallecido_hospital_direccion, s.fallecido_dom_velacion,
+             ".implode(",\n             ", $legacySelect)."
+      FROM servicios s
+      JOIN (
+        SELECT id_servicio, MAX({$servicioFallecidoIdColumn}) AS row_id
+        FROM servicio_fallecido
+        GROUP BY id_servicio
+      ) latest ON latest.id_servicio = s.id_servicio
+      JOIN servicio_fallecido sf ON sf.{$servicioFallecidoIdColumn} = latest.row_id
+      LEFT JOIN fallecido f ON f.id_fallecido = sf.id_fallecido
+    ");
+  } catch (Throwable $e) {
+    return;
+  }
+
+  $map = [
+    'fallecido_nombre' => 'legacy_fallecido_nombre',
+    'fallecido_fecha' => 'legacy_fallecido_fecha',
+    'fallecido_municipio' => 'legacy_fallecido_municipio',
+    'fallecido_hospital' => 'legacy_fallecido_hospital',
+    'fallecido_hospital_direccion' => 'legacy_fallecido_hospital_direccion',
+    'fallecido_dom_velacion' => 'legacy_fallecido_dom_velacion',
+  ];
+
+  foreach ($rows as $row) {
+    $updates = [];
+    $params = [];
+
+    foreach ($map as $target => $legacyKey) {
+      $isDate = $target === 'fallecido_fecha';
+      $current = $row[$target] ?? null;
+      $legacy = $row[$legacyKey] ?? null;
+      if (!so_has_value($current, $isDate) && so_has_value($legacy, $isDate)) {
+        $updates[] = "{$target}=?";
+        $params[] = $legacy;
+      }
+    }
+
+    if (empty($updates)) continue;
+    $params[] = $row['id_servicio'];
+    try {
+      q("UPDATE servicios SET ".implode(', ', $updates).", updated_at=CURRENT_TIMESTAMP() WHERE id_servicio=?", $params);
+    } catch (Throwable $e) {
+    }
+  }
+}
+
+function so_create_tables(bool $force = false): void {
   static $ready = false;
+  static $suppressed = false;
   if ($ready) return;
+  if ($suppressed && !$force) return;
+  if (!$force && !db_schema_bootstrap_on_request()) {
+    $suppressed = true;
+    return;
+  }
 
   try {
     q("
@@ -34,6 +164,7 @@ function so_create_tables(): void {
         contratante_email VARCHAR(120) DEFAULT NULL,
         notas TEXT DEFAULT NULL,
         estatus VARCHAR(30) NOT NULL DEFAULT 'registrado',
+        cerrado TINYINT(1) NOT NULL DEFAULT 0,
         eliminado TINYINT(1) NOT NULL DEFAULT 0,
         created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
@@ -47,6 +178,10 @@ function so_create_tables(): void {
       CREATE TABLE IF NOT EXISTS fallecido (
         id_fallecido INT AUTO_INCREMENT PRIMARY KEY,
         nom_fallecido VARCHAR(150) NOT NULL,
+        municipio VARCHAR(120) DEFAULT NULL,
+        hospital VARCHAR(150) DEFAULT NULL,
+        hospital_direccion VARCHAR(255) DEFAULT NULL,
+        dom_velacion VARCHAR(255) DEFAULT NULL,
         fecha DATE DEFAULT NULL,
         eliminado TINYINT(1) NOT NULL DEFAULT 0
       )
@@ -258,6 +393,7 @@ function so_create_tables(): void {
     'contratante_email' => "VARCHAR(120) DEFAULT NULL",
     'notas' => "TEXT DEFAULT NULL",
     'estatus' => "VARCHAR(30) NOT NULL DEFAULT 'registrado'",
+    'cerrado' => "TINYINT(1) NOT NULL DEFAULT 0",
     'eliminado' => "TINYINT(1) NOT NULL DEFAULT 0",
     'created_at' => "TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP",
     'origen_tipo' => "VARCHAR(20) NOT NULL DEFAULT 'directo'",
@@ -276,21 +412,52 @@ function so_create_tables(): void {
     'requiere_factura' => "TINYINT(1) NOT NULL DEFAULT 0",
     'observaciones_comerciales' => "TEXT DEFAULT NULL",
     'contratante_direccion' => "VARCHAR(255) DEFAULT NULL",
+    'fallecido_nombre' => "VARCHAR(150) DEFAULT NULL",
+    'fallecido_fecha' => "DATE DEFAULT NULL",
+    'fallecido_municipio' => "VARCHAR(120) DEFAULT NULL",
+    'fallecido_hospital' => "VARCHAR(150) DEFAULT NULL",
+    'fallecido_hospital_direccion' => "VARCHAR(255) DEFAULT NULL",
+    'fallecido_dom_velacion' => "VARCHAR(255) DEFAULT NULL",
     'updated_at' => "TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP",
     'closed_at' => "DATETIME DEFAULT NULL",
   ];
   foreach ($columns as $column => $ddl) {
     so_add_column_if_missing('servicios', $column, $ddl);
   }
+  so_ensure_servicios_estatus_shape();
+
+  foreach ([
+    'municipio' => "VARCHAR(120) DEFAULT NULL",
+    'hospital' => "VARCHAR(150) DEFAULT NULL",
+    'hospital_direccion' => "VARCHAR(255) DEFAULT NULL",
+    'dom_velacion' => "VARCHAR(255) DEFAULT NULL",
+  ] as $column => $ddl) {
+    so_add_column_if_missing('fallecido', $column, $ddl);
+  }
+
+  db_add_index_if_missing('servicio_asignacion', 'idx_servicio_asignacion_servicio', 'INDEX idx_servicio_asignacion_servicio (id_servicio)');
+  db_add_index_if_missing('servicio_seguimiento', 'idx_servicio_seguimiento_servicio', 'INDEX idx_servicio_seguimiento_servicio (id_servicio)');
+  db_add_index_if_missing('servicio_cierre', 'idx_servicio_cierre_servicio', 'INDEX idx_servicio_cierre_servicio (id_servicio)');
+  db_add_index_if_missing('articulos_movimientos', 'idx_articulos_movimientos_articulo', 'INDEX idx_articulos_movimientos_articulo (id_articulo, created_at)');
+  db_add_index_if_missing('articulos_salida_servicio', 'idx_articulos_salida_servicio_servicio', 'INDEX idx_articulos_salida_servicio_servicio (id_servicio, created_at)');
+  db_add_index_if_missing('cajas_movimientos', 'idx_cajas_movimientos_codigo_servicio', 'INDEX idx_cajas_movimientos_codigo_servicio (codigo, id_servicio, created_at)');
+  db_add_index_if_missing('equipos_movimientos', 'idx_equipos_movimientos_equipo_servicio', 'INDEX idx_equipos_movimientos_equipo_servicio (id_equipo, id_servicio, created_at)');
+
+  so_backfill_servicios_fallecidos();
 
   $ready = true;
+  $suppressed = false;
 }
 
-function so_bootstrap(): void {
-  so_create_tables();
+function so_bootstrap(bool $force = false): void {
+  so_create_tables($force);
 }
 
-db_register_schema_repair('servicios_operativos', 'so_bootstrap');
+function so_repair_now(): void {
+  so_bootstrap(true);
+}
+
+db_register_schema_repair('servicios_operativos', 'so_repair_now');
 
 function so_role_filter_sql(array $roles): array {
   $roles = array_values(array_filter(array_map('trim', $roles)));
@@ -335,19 +502,6 @@ function so_user_options(array $roles = []): array {
   return $opts;
 }
 
-function so_fallecidos_options(): array {
-  $opts = ['' => 'Crear nuevo fallecido'];
-  try {
-    $rows = qall("SELECT id_fallecido, nom_fallecido FROM fallecido WHERE COALESCE(eliminado,0)=0 ORDER BY nom_fallecido ASC");
-  } catch (Throwable $e) {
-    $rows = [];
-  }
-  foreach ($rows as $row) {
-    $opts[(string)$row['id_fallecido']] = $row['nom_fallecido'];
-  }
-  return $opts;
-}
-
 function so_contratos_futuros_options(): array {
   if (!so_table_exists('futuro_contratos')) return ['' => 'No aplica'];
   $opts = ['' => 'No aplica'];
@@ -373,11 +527,11 @@ function so_servicio_estatus_options(): array {
 }
 
 function so_servicio_activos_sql(): string {
-  return "COALESCE(s.estatus,'registrado') NOT IN ('finalizado','cancelado','cerrado')";
+  return iv2_servicio_activo_sql('s');
 }
 
 function so_servicio_cerrados_sql(): string {
-  return "COALESCE(s.estatus,'registrado') IN ('finalizado','cancelado','cerrado')";
+  return iv2_servicio_cerrado_sql('s');
 }
 
 function so_servicio_estatus_norm(?string $estatus): string {
@@ -508,13 +662,11 @@ function so_recalcular_saldo(int $id_servicio): void {
 function so_servicio_fetch(int $id_servicio): ?array {
   so_bootstrap();
   $sql = "
-    SELECT s.*, sf.id_fallecido,
-           COALESCE(f.nom_fallecido,'') AS fallecido,
+    SELECT s.*, COALESCE(s.cerrado,0) AS cerrado,
+           COALESCE(NULLIF(TRIM(COALESCE(s.fallecido_nombre,'')),''),'') AS fallecido,
            COALESCE(uv.nombre, uv.usuario, '') AS vendedor_nombre,
            COALESCE(ua.nombre, ua.usuario, '') AS auxiliar_nombre
     FROM servicios s
-    LEFT JOIN servicio_fallecido sf ON sf.id_servicio=s.id_servicio
-    LEFT JOIN fallecido f ON f.id_fallecido=sf.id_fallecido
     LEFT JOIN usuarios uv ON uv.id = s.id_usuario_vendedor
     LEFT JOIN usuarios ua ON ua.id = s.id_usuario_auxiliar
     WHERE s.id_servicio=? AND COALESCE(s.eliminado,0)=0
@@ -610,16 +762,6 @@ function so_servicio_totales(int $id_servicio): array {
   ];
 }
 
-function so_fallecido_resolver(PDO $pdo, int $id_fallecido, string $nom_fallecido): int {
-  if ($id_fallecido > 0) return $id_fallecido;
-  $nom_fallecido = trim($nom_fallecido);
-  if ($nom_fallecido === '') {
-    throw new RuntimeException('Debes seleccionar o registrar al fallecido.');
-  }
-  q("INSERT INTO fallecido (nom_fallecido, fecha) VALUES (?, CURRENT_DATE())", [$nom_fallecido]);
-  return (int)$pdo->lastInsertId();
-}
-
 function so_guardar_pago(PDO $pdo, int $id_servicio, float $monto, string $forma_pago, string $tipo_pago, ?string $referencia, ?string $observaciones, ?string $fecha_pago = null): int {
   $fecha_pago = $fecha_pago ?: so_now_local();
   q(
@@ -634,30 +776,120 @@ function so_guardar_pago(PDO $pdo, int $id_servicio, float $monto, string $forma
 }
 
 function so_servicios_cajas_disponibles(): array {
-  try {
-    return qall("SELECT codigo, modelo, estado FROM cajas WHERE COALESCE(eliminado,0)=0 AND estado IN ('nuevo','reciclado') ORDER BY modelo ASC");
-  } catch (Throwable $e) {
-    return [];
-  }
+  return so_inventory_section_state('cajas')['items'];
 }
 
 function so_servicios_equipo_disponible(): array {
-  try {
-    return qall("SELECT id_equipo, equipo FROM equipos WHERE COALESCE(eliminado,0)=0 AND estatus='disponible' ORDER BY equipo ASC");
-  } catch (Throwable $e) {
-    return [];
-  }
+  return so_inventory_section_state('equipos')['items'];
 }
 
 function so_servicios_articulos_disponibles(): array {
+  return so_inventory_section_state('articulos')['items'];
+}
+
+function so_inventory_section_state(string $tipo, string $query = '', ?int $limit = null): array {
   try {
-    return qall("SELECT id, articulo, existencias FROM articulos WHERE COALESCE(eliminado,0)=0 AND COALESCE(existencias,0) > 0 ORDER BY articulo ASC");
+    switch ($tipo) {
+      case 'cajas':
+        $items = iv2_disponibilidad_cajas($query, $limit);
+        break;
+      case 'equipos':
+        $items = iv2_disponibilidad_equipos($query, $limit);
+        break;
+      case 'articulos':
+        $items = iv2_disponibilidad_articulos($query, $limit);
+        break;
+      default:
+        throw new RuntimeException('Tipo de inventario no soportado.');
+    }
+    return ['items' => $items, 'error' => null];
   } catch (Throwable $e) {
-    return [];
+    db_log_error($e, ['scope' => 'inventory_section_state', 'tipo' => $tipo]);
+    $messages = [
+      'cajas' => 'No se pudieron cargar los ataudes disponibles.',
+      'equipos' => 'No se pudieron cargar los equipos disponibles.',
+      'articulos' => 'No se pudieron cargar los articulos disponibles.',
+    ];
+    return [
+      'items' => [],
+      'error' => $messages[$tipo] ?? 'No se pudo cargar la disponibilidad.',
+    ];
   }
 }
 
+function so_servicio_asignacion_codigo_columns(): array {
+  $columns = [];
+  foreach (['codigo_caja', 'codigo'] as $candidate) {
+    if (db_column_exists('servicio_asignacion', $candidate)) {
+      $columns[] = $candidate;
+    }
+  }
+  return array_values(array_unique($columns));
+}
+
+function so_guardar_codigo_caja_asignacion(int $id_servicio, string $codigo): void {
+  $codigo = trim($codigo);
+  if ($id_servicio <= 0 || $codigo === '') return;
+
+  $codeColumns = so_servicio_asignacion_codigo_columns();
+  if (empty($codeColumns)) {
+    return;
+  }
+
+  $existente = so_servicio_asignacion($id_servicio);
+  if ($existente) {
+    $set = [];
+    $params = [];
+    foreach ($codeColumns as $column) {
+      $set[] = "{$column}=?";
+      $params[] = $codigo;
+    }
+    $set[] = "updated_at=CURRENT_TIMESTAMP()";
+    $params[] = $id_servicio;
+    q(
+      "UPDATE servicio_asignacion
+       SET ".implode(', ', $set)."
+       WHERE id_servicio=?",
+      $params
+    );
+    return;
+  }
+
+  $columns = ['id_servicio'];
+  $values = [$id_servicio];
+  foreach ($codeColumns as $column) {
+    $columns[] = $column;
+    $values[] = $codigo;
+  }
+  if (db_column_exists('servicio_asignacion', 'created_by')) {
+    $columns[] = 'created_by';
+    $values[] = so_current_user_id();
+  }
+  $placeholders = implode(', ', array_fill(0, count($columns), '?'));
+  q(
+    "INSERT INTO servicio_asignacion (".implode(', ', $columns).")
+     VALUES ({$placeholders})",
+    $values
+  );
+}
+
+function so_servicio_asignacion_codigo_seed(int $id_servicio, ?string $codigo = null): ?string {
+  $codigo = trim((string)$codigo);
+  if ($codigo !== '') return $codigo;
+  $actual = function_exists('iv2_servicio_caja_actual') ? iv2_servicio_caja_actual($id_servicio, false) : null;
+  $resuelto = $actual ? trim((string)($actual['codigo_resuelto'] ?? $actual['codigo_caja'] ?? $actual['codigo'] ?? '')) : '';
+  if ($resuelto !== '') return $resuelto;
+  return null;
+}
+
 function so_servicio_cajas_asignadas(int $id_servicio): array {
+  $v2 = iv2_servicio_cajas($id_servicio);
+  if (!empty($v2)) {
+    foreach ($v2 as &$row) {
+      $row['ui_estado'] = iv2_caja_ui_badge($row);
+    }
+    return $v2;
+  }
   try {
     return qall("
       SELECT m.codigo, c.modelo, m.created_at, c.es_rentado, c.reciclado
@@ -672,6 +904,8 @@ function so_servicio_cajas_asignadas(int $id_servicio): array {
 }
 
 function so_servicio_equipos_asignados(int $id_servicio): array {
+  $v2 = iv2_servicio_equipos($id_servicio);
+  if (!empty($v2)) return $v2;
   try {
     return qall("
       SELECT em.id_equipo, e.equipo, em.created_at
@@ -685,7 +919,26 @@ function so_servicio_equipos_asignados(int $id_servicio): array {
   }
 }
 
+function so_servicio_equipos_asignados_grupo(int $id_servicio): array {
+  $v2 = iv2_servicio_equipos_agrupados($id_servicio);
+  if (!empty($v2)) return $v2;
+  $rows = so_servicio_equipos_asignados($id_servicio);
+  if (empty($rows)) return [];
+  $groups = [];
+  foreach ($rows as $row) {
+    $grupo = trim((string)($row['equipo'] ?? 'Sin grupo'));
+    if (!isset($groups[$grupo])) {
+      $groups[$grupo] = ['equipo' => $grupo, 'cantidad' => 0, 'ids' => []];
+    }
+    $groups[$grupo]['cantidad']++;
+    $groups[$grupo]['ids'][] = (string)$row['id_equipo'];
+  }
+  return array_values($groups);
+}
+
 function so_servicio_articulos_asignados(int $id_servicio): array {
+  $v2 = iv2_servicio_articulos($id_servicio);
+  if (!empty($v2)) return $v2;
   try {
     return qall("
       SELECT s.id_articulo, a.articulo, s.cantidad, s.responsable, s.created_at
@@ -719,21 +972,9 @@ function so_registrar_mov_equipo(PDO $pdo, string $id_equipo, string $tipo, ?int
 }
 
 function so_registrar_articulo_servicio(PDO $pdo, int $id_servicio, int $id_articulo, int $cantidad, string $responsable, ?string $notas = null): void {
-  $articulo = qone("SELECT id, articulo, existencias FROM articulos WHERE id=? AND COALESCE(eliminado,0)=0 FOR UPDATE", [$id_articulo]);
-  if (!$articulo) throw new RuntimeException('Articulo no encontrado.');
-  if ($cantidad <= 0) throw new RuntimeException('La cantidad debe ser mayor a cero.');
-  if ((int)$articulo['existencias'] < $cantidad) throw new RuntimeException('No hay existencias suficientes.');
-
-  q(
-    "INSERT INTO articulos_salida_servicio (id_servicio,id_articulo,cantidad,responsable) VALUES (?,?,?,?)",
-    [$id_servicio, $id_articulo, $cantidad, $responsable]
-  );
-  q("UPDATE articulos SET existencias=existencias-?, updated_at=CURRENT_TIMESTAMP() WHERE id=?", [$cantidad, $id_articulo]);
-  q(
-    "INSERT INTO articulos_movimientos (id_articulo,tipo,cantidad,referencia,origen,destino,notas)
-     VALUES (?, 'salida', ?, ?, NULL, NULL, ?)",
-    [$id_articulo, $cantidad, 'servicio:'.$id_servicio, $notas ?: null]
-  );
+  iv2_registrar_consumos($pdo, $id_servicio, [
+    ['id_articulo' => $id_articulo, 'cantidad' => $cantidad],
+  ], so_current_user_id(), $responsable, $notas);
   so_log_bitacora($id_servicio, 'salida_articulo', 'Salida de articulo registrada', [
     'id_articulo' => $id_articulo,
     'cantidad' => $cantidad,
@@ -761,26 +1002,34 @@ function so_guardar_asignacion(int $id_servicio, array $data): void {
       ]
     );
   } else {
+    $columns = ['id_servicio', 'fecha_hora_inicio', 'lugar_tipo', 'lugar_detalle', 'id_usuario_auxiliar', 'id_vehiculo', 'id_sala', 'instrucciones', 'created_by'];
+    $values = [
+      $id_servicio,
+      $data['fecha_hora_inicio'] ?: null,
+      $data['lugar_tipo'] ?: null,
+      $data['lugar_detalle'] ?: null,
+      $data['id_usuario_auxiliar'] ?: null,
+      $data['id_vehiculo'] ?: null,
+      $data['id_sala'] ?: null,
+      $data['instrucciones'] ?: null,
+      so_current_user_id(),
+    ];
+    $codigoSeed = so_servicio_asignacion_codigo_seed($id_servicio, $data['codigo_caja'] ?? null);
+    foreach (so_servicio_asignacion_codigo_columns() as $codeColumn) {
+      $columns[] = $codeColumn;
+      $values[] = $codigoSeed ?? '';
+    }
+    $placeholders = implode(', ', array_fill(0, count($columns), '?'));
     q(
-      "INSERT INTO servicio_asignacion (id_servicio, fecha_hora_inicio, lugar_tipo, lugar_detalle, id_usuario_auxiliar, id_vehiculo, id_sala, instrucciones, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      [
-        $id_servicio,
-        $data['fecha_hora_inicio'] ?: null,
-        $data['lugar_tipo'] ?: null,
-        $data['lugar_detalle'] ?: null,
-        $data['id_usuario_auxiliar'] ?: null,
-        $data['id_vehiculo'] ?: null,
-        $data['id_sala'] ?: null,
-        $data['instrucciones'] ?: null,
-        so_current_user_id(),
-      ]
+      "INSERT INTO servicio_asignacion (".implode(', ', $columns).")
+       VALUES ({$placeholders})",
+      $values
     );
   }
 
   q(
     "UPDATE servicios
-     SET fecha_hora_programada=?, lugar_tipo=?, lugar_detalle=?, id_vehiculo=?, id_sala=?, id_usuario_auxiliar=?, estatus='preparacion', updated_at=CURRENT_TIMESTAMP()
+     SET fecha_hora_programada=?, lugar_tipo=?, lugar_detalle=?, id_vehiculo=?, id_sala=?, id_usuario_auxiliar=?, updated_at=CURRENT_TIMESTAMP()
      WHERE id_servicio=?",
     [
       $data['fecha_hora_inicio'] ?: null,
@@ -792,6 +1041,7 @@ function so_guardar_asignacion(int $id_servicio, array $data): void {
       $id_servicio,
     ]
   );
+  iv2_update_servicio_estatus($id_servicio, 'preparacion', null, null);
 
   so_log_bitacora($id_servicio, 'asignacion', 'Asignacion operativa actualizada', [
     'fecha_hora_inicio' => $data['fecha_hora_inicio'] ?: null,
@@ -842,12 +1092,15 @@ function so_guardar_seguimiento(int $id_servicio, array $data): string {
   } elseif (!empty($data['hora_inicio_real'])) {
     $estatus = 'en_proceso';
   }
-  q("UPDATE servicios SET estatus=?, updated_at=CURRENT_TIMESTAMP() WHERE id_servicio=?", [$estatus, $id_servicio]);
+  iv2_update_servicio_estatus($id_servicio, $estatus, null, null);
   so_log_bitacora($id_servicio, 'seguimiento', 'Seguimiento operativo actualizado', ['estatus' => $estatus]);
   return $estatus;
 }
 
 function so_pendientes_devolucion_cajas(int $id_servicio): array {
+  if (iv2_servicio_tiene_registros('servicio_caja', $id_servicio) || iv2_servicio_tiene_registros('renta_cajas', $id_servicio)) {
+    return iv2_pendientes_devolucion_cajas($id_servicio);
+  }
   try {
     return qall("
       SELECT m.codigo, c.modelo, c.es_rentado, c.reciclado
@@ -864,6 +1117,21 @@ function so_pendientes_devolucion_cajas(int $id_servicio): array {
 }
 
 function so_pendientes_devolucion_equipos(int $id_servicio): array {
+  if (iv2_servicio_tiene_registros('servicio_equipo', $id_servicio)) {
+    $equipoIdColumn = iv2_servicio_equipo_id_column();
+    $orderSql = iv2_order_sql('servicio_equipo', 'se', ['fecha_asignacion', 'updated_at', 'created_at', $equipoIdColumn]);
+    try {
+      return qall("
+        SELECT se.id_equipo, e.equipo
+        FROM servicio_equipo se
+        LEFT JOIN equipos e ON e.id_equipo = se.id_equipo
+        WHERE se.id_servicio=? AND se.fecha_liberacion IS NULL
+        {$orderSql}
+      ", [$id_servicio]);
+    } catch (Throwable $e) {
+      return [];
+    }
+  }
   try {
     return qall("
       SELECT em.id_equipo, e.equipo
@@ -879,26 +1147,68 @@ function so_pendientes_devolucion_equipos(int $id_servicio): array {
   }
 }
 
-function so_cerrar_servicio_recursos(PDO $pdo, int $id_servicio): void {
-  $cajas = so_pendientes_devolucion_cajas($id_servicio);
-  foreach ($cajas as $caja) {
-    so_registrar_mov_caja($pdo, $caja['codigo'], 'devolucion', $id_servicio, 'Cierre de servicio');
-    if (!empty($caja['es_rentado'])) {
-      q("UPDATE cajas SET reciclado=1, ciclos_uso=ciclos_uso+1, estado='reciclado' WHERE codigo=?", [$caja['codigo']]);
-    } else {
-      q("UPDATE cajas SET estado='fuera_uso' WHERE codigo=?", [$caja['codigo']]);
+function so_cerrar_servicio_recursos(PDO $pdo, int $id_servicio, array $opciones = []): array {
+  $resultado = [
+    'caja' => null,
+    'equipos' => [],
+    'articulos' => [],
+  ];
+  if (iv2_servicio_tiene_registros('servicio_caja', $id_servicio) || iv2_servicio_tiene_registros('renta_cajas', $id_servicio)) {
+    $accionCaja = trim((string)($opciones['accion_caja'] ?? 'retorna')) ?: 'retorna';
+    $recicladoCaja = array_key_exists('reciclado_caja', $opciones) ? (int)$opciones['reciclado_caja'] : 1;
+    $observacionesCaja = trim((string)($opciones['observaciones_caja'] ?? '')) ?: 'Cierre de servicio';
+    $resultado['caja'] = iv2_cerrar_caja_servicio($pdo, $id_servicio, $accionCaja, $recicladoCaja, $observacionesCaja, so_current_user_id());
+    iv2_assert_cierre_permitido($id_servicio);
+  }
+
+  $usaEquiposV2 = iv2_servicio_tiene_registros('servicio_equipo', $id_servicio);
+  if ($usaEquiposV2) {
+    $idsEquipo = $opciones['ids_equipo'] ?? [];
+    $liberarTodos = !empty($opciones['liberar_todos_equipos']);
+    if ($liberarTodos) {
+      $pendientes = so_pendientes_devolucion_equipos($id_servicio);
+      $idsEquipo = array_column($pendientes, 'id_equipo');
+    }
+    $idsEquipo = array_values(array_unique(array_filter(array_map(static fn($value): string => trim((string)$value), is_array($idsEquipo) ? $idsEquipo : []))));
+    if (!empty($idsEquipo)) {
+      $resultado['equipos'] = iv2_cancelar_equipos($pdo, $id_servicio, $idsEquipo, so_current_user_id(), 'Cierre de servicio', 'devolucion');
     }
   }
 
-  $equipos = so_pendientes_devolucion_equipos($id_servicio);
-  foreach ($equipos as $equipo) {
-    so_registrar_mov_equipo($pdo, $equipo['id_equipo'], 'devolucion', $id_servicio, null, 'almacen', 'Cierre de servicio');
-    q("UPDATE equipos SET estatus='disponible', updated_at=CURRENT_TIMESTAMP() WHERE id_equipo=?", [$equipo['id_equipo']]);
+  if (!empty($opciones['articulos']) && is_array($opciones['articulos'])) {
+    foreach ($opciones['articulos'] as $item) {
+      if (!is_array($item)) continue;
+      $idServicioArticulo = (int)($item['id_servicio_articulo'] ?? 0);
+      $cantidad = (int)($item['cantidad'] ?? 0);
+      if ($idServicioArticulo <= 0 || $cantidad <= 0) continue;
+      $resultado['articulos'][] = iv2_cancelar_consumo_articulo(
+        $pdo,
+        $id_servicio,
+        $idServicioArticulo,
+        $cantidad,
+        so_current_user_id(),
+        trim((string)($item['observaciones'] ?? '')) ?: 'Devolucion en cierre de servicio',
+        'devolucion'
+      );
+    }
   }
+
+  if (!$usaEquiposV2) {
+    $equipos = so_pendientes_devolucion_equipos($id_servicio);
+    foreach ($equipos as $equipo) {
+      so_registrar_mov_equipo($pdo, $equipo['id_equipo'], 'devolucion', $id_servicio, null, 'almacen', 'Cierre de servicio');
+      q("UPDATE equipos SET estatus='disponible', updated_at=CURRENT_TIMESTAMP() WHERE id_equipo=?", [$equipo['id_equipo']]);
+    }
+  }
+  if ($usaEquiposV2 && !empty(so_pendientes_devolucion_equipos($id_servicio))) {
+    throw new RuntimeException('Aun hay equipos activos por devolver antes de cerrar el servicio.');
+  }
+  return $resultado;
 }
 
 function so_guardar_cierre(int $id_servicio, array $data): void {
   so_bootstrap();
+  iv2_assert_cierre_permitido($id_servicio);
   $existente = so_servicio_cierre($id_servicio);
   if ($existente) {
     q(
@@ -934,8 +1244,7 @@ function so_guardar_cierre(int $id_servicio, array $data): void {
       ]
     );
   }
-  q("UPDATE servicios SET estatus='finalizado', closed_at=?, updated_at=CURRENT_TIMESTAMP() WHERE id_servicio=?",
-    [$data['fecha_cierre'] ?: so_now_local(), $id_servicio]);
+  iv2_update_servicio_estatus($id_servicio, 'finalizado', null, $data['fecha_cierre'] ?: so_now_local());
   so_log_bitacora($id_servicio, 'cierre', 'Cierre administrativo registrado', [
     'pago_confirmado' => $data['pago_confirmado'],
     'auxiliar_confirma' => $data['auxiliar_confirma'],
@@ -982,6 +1291,15 @@ function so_servicio_resumen_html(int $id_servicio): string {
   </style>
   <h1>Servicio <?= e($svc['folio'] ?: '#'.$svc['id_servicio']) ?></h1>
   <p class="muted">Fallecido: <?= e($svc['fallecido'] ?: 'No capturado') ?> | Estatus: <?= e(ucwords(str_replace('_', ' ', so_servicio_estatus_norm($svc['estatus'] ?? '')))) ?></p>
+  <div class="card">
+    <h2>Datos del fallecido</h2>
+    <table class="grid">
+      <tr><th>Nombre</th><td><?= e($svc['fallecido'] ?: '—') ?></td><th>Fecha del fallecimiento</th><td><?= e($svc['fallecido_fecha'] ?: '—') ?></td></tr>
+      <tr><th>Municipio</th><td><?= e($svc['fallecido_municipio'] ?: '—') ?></td><th>Hospital</th><td><?= e($svc['fallecido_hospital'] ?: '—') ?></td></tr>
+      <tr><th>Direccion del hospital</th><td colspan="3"><?= e($svc['fallecido_hospital_direccion'] ?: '—') ?></td></tr>
+      <tr><th>Domicilio de velacion</th><td colspan="3"><?= e($svc['fallecido_dom_velacion'] ?: '—') ?></td></tr>
+    </table>
+  </div>
   <table class="grid">
     <tr><th>Contratante</th><td><?= e($svc['contratante_nombre']) ?></td><th>Telefono</th><td><?= e($svc['contratante_tel'] ?: '—') ?></td></tr>
     <tr><th>Correo</th><td><?= e($svc['contratante_email'] ?: '—') ?></td><th>Direccion</th><td><?= e($svc['contratante_direccion'] ?: '—') ?></td></tr>

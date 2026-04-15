@@ -15,6 +15,7 @@ list($module,$action) = explode('.', $route) + [null,null];
 
 $allowed = [
   'home'        => ['index'],
+  'home_api'    => ['kpis','widgets'],
   'auth'        => ['login','logout','do_login'],
   'articulos'   => ['listar','nuevo','guardar','editar','actualizar','baja','ajustar','historial'],
   'compras'     => ['listar','nuevo','guardar','ver'],
@@ -22,11 +23,13 @@ $allowed = [
   'cajas'       => ['listar','editar','nuevo','guardar','actualizar','baja','estado','reciclar','asignar'],
   'fallecidos'  => ['listar','nuevo','guardar','editar','actualizar','baja'],
   'servicios'   => ['listar','nuevo','guardar','ver','editar','actualizar','asignar_caja','asignar_equipo','cambiar_estatus','cerrar','borrar'],
-  'servicio_asignaciones' => ['ver','guardar','actualizar','agregar_articulo','orden_pdf'],
+  'servicio_asignaciones' => ['ver','guardar','actualizar','agregar_articulo','cancelar_articulo','cancelar_caja','cancelar_equipos','orden_pdf'],
   'servicio_seguimiento'  => ['ver','guardar','agregar_consumo','agregar_incidencia'],
-  'servicio_cierres'      => ['ver','guardar','imprimir'],
+  'servicio_cierres'      => ['ver','guardar','imprimir','devolver_caja'],
   'servicio_pagos'        => ['listar','nuevo','guardar','recibo'],
   'servicio_reportes'     => ['orden_preparacion_pdf','consumo_pdf','acta_cierre_pdf','reporte_cierre_pdf'],
+  'inventario_api'        => ['disponibilidad'],
+  'servicios_api'         => ['consumos','devolucion_caja','asignar_caja','asignar_equipo','guardar_asignacion','cancelar_caja','cancelar_equipos','cancelar_consumo','devolucion_articulos','liberar_equipos'],
   'equipos'     => ['listar','nuevo','guardar','editar','actualizar','asignar','guardar_asignacion','retornar','guardar_retorno','baja'],
   'proveedores' => ['listar','nuevo','guardar','editar','actualizar','baja','activar','inactivar'],
   'pagos'       => ['reporte_base','reporte_comisiones', 'contratos','nuevo_abono','guardar_abono','corte','comisiones','guardar_comision', 'editar_contrato', 'borrar_abono'],
@@ -34,6 +37,7 @@ $allowed = [
   'contratos'   => ['titulo_pdf','pdf','listar','nuevo','guardar','editar','actualizar','ver', 'eliminar'],
   'rutas'       => ['contratos', 'cobradores', 'asignar', 'asignar_masivo', ''],
   'usuarios'    => ['listar','nuevo','guardar','editar','actualizar','roles','guardar_rol','permisos','guardar_permiso','asignar_roles','asignar_permisos','cambiar_password', 'eliminar', 'editar_rol', 'actualizar_rol'],
+  'maintenance' => ['schema_repair','perf_report'],
 
 
   // aquí puedes agregar después más módulos como usuarios, rentas, etc.

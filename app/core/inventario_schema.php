@@ -2,9 +2,15 @@
 
 require_once __DIR__.'/db.php';
 
-function inventario_schema_bootstrap(): void {
+function inventario_schema_bootstrap(bool $force = false): void {
   static $ready = false;
+  static $suppressed = false;
   if ($ready) return;
+  if ($suppressed && !$force) return;
+  if (!$force && !db_schema_bootstrap_on_request()) {
+    $suppressed = true;
+    return;
+  }
 
   try {
     q("
@@ -127,6 +133,11 @@ function inventario_schema_bootstrap(): void {
   }
 
   $ready = true;
+  $suppressed = false;
 }
 
-db_register_schema_repair('inventario', 'inventario_schema_bootstrap');
+function inventario_schema_repair_now(): void {
+  inventario_schema_bootstrap(true);
+}
+
+db_register_schema_repair('inventario', 'inventario_schema_repair_now');

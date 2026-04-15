@@ -6,7 +6,6 @@ require_once __DIR__.'/../core/auth.php';
 require_once __DIR__.'/../core/servicios_operativos.php';
 
 require_login();
-so_bootstrap();
 
 $action = $action ?? 'ver';
 require_role(['administradora','auxiliar','vendedor','coordinador']);
@@ -49,7 +48,7 @@ case 'agregar_consumo':
   try {
     $pdo->beginTransaction();
     so_registrar_articulo_servicio($pdo, $id, $id_articulo, $cantidad, $responsable, $notas);
-    q("UPDATE servicios SET estatus='en_proceso', updated_at=CURRENT_TIMESTAMP() WHERE id_servicio=?", [$id]);
+    iv2_update_servicio_estatus($id, 'en_proceso', null, null);
     $pdo->commit();
     flash("<div class='alert alert-success'>Consumo adicional registrado.</div>");
   } catch (Throwable $e) {

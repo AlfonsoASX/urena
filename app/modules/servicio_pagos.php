@@ -6,7 +6,6 @@ require_once __DIR__.'/../core/auth.php';
 require_once __DIR__.'/../core/servicios_operativos.php';
 
 require_login();
-so_bootstrap();
 
 $action = $action ?? 'listar';
 require_role(['administradora','vendedor','caja','coordinador']);
@@ -92,11 +91,9 @@ case 'recibo':
   require_once __DIR__.'/../fpdf/fpdf.php';
   $idPago = (int)($_GET['id_pago'] ?? 0);
   $pago = qone("
-    SELECT sp.*, s.folio, s.contratante_nombre, COALESCE(f.nom_fallecido,'') AS fallecido
+    SELECT sp.*, s.folio, s.contratante_nombre, COALESCE(s.fallecido_nombre,'') AS fallecido
     FROM servicio_pagos sp
     JOIN servicios s ON s.id_servicio = sp.id_servicio
-    LEFT JOIN servicio_fallecido sf ON sf.id_servicio=s.id_servicio
-    LEFT JOIN fallecido f ON f.id_fallecido=sf.id_fallecido
     WHERE sp.id_pago=?
     LIMIT 1
   ", [$idPago]);
@@ -197,16 +194,14 @@ default:
   $params = [];
   if ($q !== '') {
     $like = '%'.$q.'%';
-    $where[] = "(s.folio LIKE ? OR s.contratante_nombre LIKE ? OR COALESCE(f.nom_fallecido,'') LIKE ?)";
+    $where[] = "(s.folio LIKE ? OR s.contratante_nombre LIKE ? OR COALESCE(s.fallecido_nombre,'') LIKE ?)";
     array_push($params, $like, $like, $like);
   }
   $rows = qall("
     SELECT sp.id_pago, sp.fecha_pago, sp.tipo_pago, sp.forma_pago, sp.monto, sp.id_servicio,
-           s.folio, s.contratante_nombre, COALESCE(f.nom_fallecido,'') AS fallecido
+           s.folio, s.contratante_nombre, COALESCE(s.fallecido_nombre,'') AS fallecido
     FROM servicio_pagos sp
     JOIN servicios s ON s.id_servicio=sp.id_servicio
-    LEFT JOIN servicio_fallecido sf ON sf.id_servicio=s.id_servicio
-    LEFT JOIN fallecido f ON f.id_fallecido=sf.id_fallecido
     WHERE ".implode(' AND ', $where)."
     ORDER BY sp.fecha_pago DESC, sp.id_pago DESC
     LIMIT 200

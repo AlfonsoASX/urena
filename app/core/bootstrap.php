@@ -5,11 +5,31 @@ $GLOBALS['cfg'] = $cfg;
 
 require __DIR__.'/db.php';
 require __DIR__.'/inventario_schema.php';
+require __DIR__.'/performance_schema.php';
 require __DIR__.'/helpers.php';
 require __DIR__.'/ui.php';
 require __DIR__.'/auth.php';
+require __DIR__.'/api.php';
+require __DIR__.'/inventario_v2.php';
+require __DIR__.'/servicios_operativos.php';
 
-inventario_schema_bootstrap();
+db_perf_boot();
+so_ensure_runtime_schema_compat();
+if (db_schema_bootstrap_on_request()) {
+  inventario_schema_bootstrap(true);
+  iv2_bootstrap(true);
+  so_bootstrap(true);
+  perf_schema_bootstrap(true);
+  try {
+    db_schema_snapshot_refresh();
+  } catch (Throwable $e) {
+    db_log_error($e, ['scope' => 'schema_snapshot_refresh_boot']);
+  }
+}
+
+register_shutdown_function(function () {
+  db_perf_log_request();
+});
 
 set_exception_handler(function (Throwable $e) {
   db_rollback_open_transaction();
@@ -26,6 +46,22 @@ set_exception_handler(function (Throwable $e) {
     fwrite(STDERR, $message.PHP_EOL);
     fwrite(STDERR, $e->getMessage().PHP_EOL);
     return;
+  }
+
+  if (function_exists('api_is_request') && api_is_request()) {
+    $payload = [
+      'ok' => false,
+      'message' => $message,
+    ];
+    if (!empty($GLOBALS['cfg']['debug'])) {
+      $payload['debug'] = ['error' => $e->getMessage()];
+    }
+    if (!headers_sent()) {
+      http_response_code(500);
+      header('Content-Type: application/json; charset=utf-8');
+    }
+    echo json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    exit;
   }
 
   if (!headers_sent() && function_exists('flash')) {
