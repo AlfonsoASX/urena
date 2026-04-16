@@ -750,25 +750,10 @@ function iv2_servicio_caja_actual(int $id_servicio, bool $forUpdate = false): ?a
 
 function iv2_servicio_caja_limpiar(int $id_servicio, ?string $tipoAsignacion = null, ?string $observaciones = null): void {
   if (!db_table_exists('servicio_caja')) return;
-  $set = [];
-  $params = [];
-  foreach (iv2_servicio_caja_codigo_columns() as $codeColumn) {
-    $set[] = "{$codeColumn}=''";
-  }
-  if (db_column_exists('servicio_caja', 'tipo_asignacion') && $tipoAsignacion !== null) {
-    $set[] = "tipo_asignacion=?";
-    $params[] = $tipoAsignacion;
-  }
-  if (db_column_exists('servicio_caja', 'observaciones') && $observaciones !== null) {
-    $set[] = "observaciones=?";
-    $params[] = $observaciones;
-  }
-  if (db_column_exists('servicio_caja', 'updated_at')) {
-    $set[] = "updated_at=CURRENT_TIMESTAMP()";
-  }
-  if (empty($set)) return;
-  $params[] = $id_servicio;
-  q("UPDATE servicio_caja SET ".implode(', ', $set)." WHERE id_servicio=?", $params);
+  // Eliminar la fila en lugar de poner codigo=''.
+  // Poner '' dispara la FK (servicio_caja.codigo → cajas.codigo) porque '' no existe en cajas.
+  // iv2_servicio_caja_actual busca filas con codigo <> '', así que sin fila = sin ataúd asignado.
+  q("DELETE FROM servicio_caja WHERE id_servicio=?", [$id_servicio]);
 }
 
 function iv2_renta_abierta(int $id_servicio, string $codigo, bool $forUpdate = false): ?array {
@@ -872,12 +857,18 @@ function iv2_asignar_caja(PDO $pdo, int $id_servicio, string $codigo, ?string $t
   if (empty($codigoParams)) {
     $codigoParams[] = $codigo;
   }
+  // Solo bloquear si el servicio que tiene la asignación permanente sigue abierto.
+  // Servicios cerrados/finalizados dejan filas stale en servicio_caja que no deben
+  // impedir reasignar una caja que ya figura como disponible en el catálogo.
   $otraPermanente = qone(
-    "SELECT id_servicio
-     FROM servicio_caja
-     WHERE {$codigoFiltersSql} AND tipo_asignacion='permanente' AND id_servicio<>?
-     ".iv2_order_sql('servicio_caja', null, ['fecha_asignacion', 'updated_at', 'created_at', iv2_servicio_caja_id_column()])."
-     LIMIT 1 FOR UPDATE",
+    "SELECT sc.id_servicio
+     FROM servicio_caja sc
+     JOIN servicios s ON s.id_servicio = sc.id_servicio
+     WHERE {$codigoFiltersSql} AND sc.tipo_asignacion='permanente' AND sc.id_servicio<>?
+     AND COALESCE(s.eliminado,0)=0
+     AND COALESCE(s.cerrado,0)=0
+     AND COALESCE(s.estatus,'registrado') NOT IN ('finalizado','cerrado','cancelado')
+     LIMIT 1",
     array_merge($codigoParams, [$id_servicio])
   );
   if ($otraPermanente) {

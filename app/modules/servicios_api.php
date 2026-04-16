@@ -54,6 +54,17 @@ function servicios_api_error(Throwable $e, string $action, string $message): voi
   api_error(500, $message);
 }
 
+/**
+ * Touch inventario tables outside of any transaction so that schema repairs
+ * (DDL) can run safely before we open a transaction.  MySQL DDL causes an
+ * implicit COMMIT, which would corrupt an open PDO transaction.
+ */
+function servicios_api_warmup_schema(): void {
+  if (db()->inTransaction()) return;
+  try { qone("SELECT 1 FROM servicio_equipo LIMIT 1"); } catch (Throwable $ignored) {}
+  try { qone("SELECT 1 FROM servicio_caja LIMIT 1"); } catch (Throwable $ignored) {}
+}
+
 api_require_login();
 api_require_role(['administradora', 'auxiliar', 'coordinador', 'vendedor', 'caja']);
 
@@ -105,6 +116,7 @@ case 'asignar_caja':
     api_error(400, 'Payload invalido.');
   }
   servicios_api_servicio($idServicio);
+  servicios_api_warmup_schema();
   $pdo = db();
   try {
     $pdo->beginTransaction();
@@ -139,6 +151,7 @@ case 'asignar_equipo':
     api_error(400, 'Payload invalido.');
   }
   servicios_api_servicio($idServicio);
+  servicios_api_warmup_schema();
   $pdo = db();
   try {
     $pdo->beginTransaction();
@@ -171,6 +184,7 @@ case 'cancelar_caja':
     api_error(400, 'Payload invalido.');
   }
   servicios_api_servicio($idServicio);
+  servicios_api_warmup_schema();
   $pdo = db();
   try {
     $pdo->beginTransaction();
@@ -195,6 +209,7 @@ case 'liberar_equipos':
     api_error(400, 'Payload invalido.');
   }
   servicios_api_servicio($idServicio);
+  servicios_api_warmup_schema();
   $tipoEvento = $action === 'liberar_equipos' ? 'devolucion' : 'cancelacion';
   $mensaje = $action === 'liberar_equipos' ? 'Equipos liberados correctamente.' : 'Equipos retirados del servicio.';
   $pdo = db();
@@ -220,7 +235,7 @@ case 'consumos':
     api_error(400, 'Payload invalido.');
   }
   servicios_api_servicio($idServicio);
-
+  servicios_api_warmup_schema();
   $pdo = db();
   try {
     $pdo->beginTransaction();
@@ -256,6 +271,7 @@ case 'devolucion_articulos':
     api_error(400, 'Payload invalido.');
   }
   servicios_api_servicio($idServicio);
+  servicios_api_warmup_schema();
   $tipoEvento = $action === 'devolucion_articulos' ? 'devolucion' : 'cancelacion';
   $pdo = db();
   try {
@@ -291,7 +307,7 @@ case 'devolucion_caja':
     api_error(400, 'Payload invalido.');
   }
   servicios_api_servicio($idServicio);
-
+  servicios_api_warmup_schema();
   $pdo = db();
   try {
     $pdo->beginTransaction();

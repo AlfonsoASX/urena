@@ -623,8 +623,12 @@ function db_prepare_execute(string $sql, array $params = [], string $mode = 'exe
     $fingerprint = md5($sql.'|'.$e->getMessage());
     if (db_is_schema_exception($e) && empty($repairAttempts[$fingerprint])) {
       $repairAttempts[$fingerprint] = true;
-      db_run_registered_repairs();
-      return db_prepare_execute($sql, $params, $mode);
+      // DDL causes implicit MySQL commit — never run repairs inside an active transaction
+      // to avoid corrupting the transaction state (PDO in_txn flag vs MySQL reality).
+      if (!$pdo->inTransaction()) {
+        db_run_registered_repairs();
+        return db_prepare_execute($sql, $params, $mode);
+      }
     }
     db_log_error($e, ['sql' => $sql, 'params' => $params, 'mode' => $mode, 'route' => $_GET['r'] ?? null]);
     throw $e;
