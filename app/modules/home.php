@@ -2,10 +2,262 @@
 require_once __DIR__."/../core/db.php";
 require_once __DIR__."/../core/helpers.php";
 require_once __DIR__."/../core/auth.php";
+require_once __DIR__."/../core/servicios_operativos.php";
+require_once __DIR__."/../core/inventario_v2.php";
 
 require_login();
 
-$isAdmin = user_has_role(['administradora', 'admin']);
+$isAdmin    = user_has_role(['administradora', 'admin']);
+$isAuxiliar = !$isAdmin && user_has_role(['auxiliar']) && !user_has_role(['administradora','coordinador','vendedor']);
+
+// ── Vista Auxiliar ────────────────────────────────────────────────────────────
+if ($isAuxiliar) {
+  so_bootstrap();
+  iv2_bootstrap();
+
+  // Servicios activos
+  $activosSql = iv2_servicio_activo_sql('s');
+  $serviciosActivos = [];
+  try {
+    $serviciosActivos = qall("
+      SELECT s.id_servicio, s.folio,
+             COALESCE(NULLIF(TRIM(COALESCE(s.fallecido_nombre,'')),''), 'Sin fallecido') AS fallecido,
+             COALESCE(s.estatus,'registrado') AS estatus,
+             s.fecha_hora_programada,
+             s.tipo_servicio,
+             COALESCE(ua.nombre, ua.usuario, '') AS auxiliar_nombre,
+             COALESCE(s.lugar_tipo,'') AS lugar_tipo
+      FROM servicios s
+      LEFT JOIN usuarios ua ON ua.id = s.id_usuario_auxiliar
+      WHERE {$activosSql}
+      ORDER BY s.fecha_hora_programada ASC, s.id_servicio DESC
+    ");
+  } catch (Throwable $e) {}
+
+  foreach ($serviciosActivos as &$row) {
+    $row['estatus_norm']  = so_servicio_estatus_norm($row['estatus']);
+    $row['estatus_badge'] = so_servicio_badge($row['estatus']);
+  }
+  unset($row);
+
+  // Conteo por estatus
+  $cntRegistrado  = count(array_filter($serviciosActivos, fn($r) => $r['estatus_norm'] === 'registrado'));
+  $cntPreparacion = count(array_filter($serviciosActivos, fn($r) => $r['estatus_norm'] === 'preparacion'));
+  $cntEnProceso   = count(array_filter($serviciosActivos, fn($r) => $r['estatus_norm'] === 'en_proceso'));
+
+  // Inventario – cajas disponibles
+  $cajasState    = so_inventory_section_state('cajas',    '', 100);
+  $cajasDisp     = count($cajasState['items']);
+
+  // Inventario – equipos por grupo
+  $equiposGrupos = [];
+  try { $equiposGrupos = iv2_disponibilidad_equipos('', 80, true); } catch (Throwable $e) {}
+
+  // Inventario – artículos con stock bajo (≤ 5)
+  $articulosBajos = [];
+  try {
+    $articulosBajos = qall("
+      SELECT articulo, COALESCE(existencias,0) AS existencias
+      FROM articulos
+      WHERE COALESCE(eliminado,0)=0 AND COALESCE(existencias,0) <= 5
+      ORDER BY existencias ASC, articulo ASC
+      LIMIT 20
+    ");
+  } catch (Throwable $e) {}
+
+  // Artículos total con stock
+  $articulosDisp = 0;
+  try {
+    $row = qone("SELECT COUNT(*) AS cnt FROM articulos WHERE COALESCE(eliminado,0)=0 AND COALESCE(existencias,0) > 0");
+    $articulosDisp = (int)($row['cnt'] ?? 0);
+  } catch (Throwable $e) {}
+
+  ob_start(); ?>
+  <div class="py-3 py-md-4">
+    <div class="mb-4">
+      <h1 class="h4 m-0">Panel auxiliar</h1>
+      <div class="text-muted small">Vista operativa — servicios activos e inventario</div>
+    </div>
+
+    <!-- KPIs -->
+    <div class="row g-3 mb-4">
+      <div class="col-6 col-md-3">
+        <div class="card border-secondary h-100">
+          <div class="card-body py-3">
+            <div class="text-muted small">Registrados</div>
+            <div class="fs-2 fw-bold text-secondary"><?= $cntRegistrado ?></div>
+            <div class="small text-muted">Sin preparar</div>
+          </div>
+        </div>
+      </div>
+      <div class="col-6 col-md-3">
+        <div class="card border-info h-100">
+          <div class="card-body py-3">
+            <div class="text-muted small">En preparación</div>
+            <div class="fs-2 fw-bold text-info"><?= $cntPreparacion ?></div>
+            <div class="small text-muted">Asignando recursos</div>
+          </div>
+        </div>
+      </div>
+      <div class="col-6 col-md-3">
+        <div class="card border-warning h-100">
+          <div class="card-body py-3">
+            <div class="text-muted small">En proceso</div>
+            <div class="fs-2 fw-bold text-warning"><?= $cntEnProceso ?></div>
+            <div class="small text-muted">Servicio activo</div>
+          </div>
+        </div>
+      </div>
+      <div class="col-6 col-md-3">
+        <div class="card border-<?= count($articulosBajos) ? 'danger' : 'success' ?> h-100">
+          <div class="card-body py-3">
+            <div class="text-muted small">Artículos stock bajo</div>
+            <div class="fs-2 fw-bold text-<?= count($articulosBajos) ? 'danger' : 'success' ?>"><?= count($articulosBajos) ?></div>
+            <div class="small text-muted"><?= $articulosDisp ?> con existencias</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="row g-3">
+
+      <!-- Servicios activos -->
+      <div class="col-12 col-xl-8">
+        <div class="card shadow-sm h-100">
+          <div class="card-header d-flex justify-content-between align-items-center py-2">
+            <span class="fw-semibold">Servicios activos</span>
+            <a href="?r=servicios.listar" class="btn btn-sm btn-outline-secondary">Ver todos</a>
+          </div>
+          <div class="card-body p-0">
+            <?php if (empty($serviciosActivos)): ?>
+              <div class="text-center text-muted py-5">Sin servicios activos actualmente.</div>
+            <?php else: ?>
+              <div class="table-responsive">
+                <table class="table table-sm table-hover align-middle mb-0">
+                  <thead class="table-light">
+                    <tr>
+                      <th class="ps-3">Folio</th>
+                      <th>Fallecido</th>
+                      <th>Estatus</th>
+                      <th>Programado</th>
+                      <th>Auxiliar</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <?php foreach ($serviciosActivos as $svc): ?>
+                      <tr>
+                        <td class="ps-3 fw-semibold text-nowrap"><?= e($svc['folio'] ?: '#'.$svc['id_servicio']) ?></td>
+                        <td><?= e($svc['fallecido']) ?></td>
+                        <td>
+                          <span class="badge text-bg-<?= e($svc['estatus_badge']) ?>">
+                            <?= e(ucwords(str_replace('_',' ',$svc['estatus_norm']))) ?>
+                          </span>
+                        </td>
+                        <td class="text-muted small text-nowrap">
+                          <?php if ($svc['fecha_hora_programada'] && $svc['fecha_hora_programada'] !== '0000-00-00 00:00:00'): ?>
+                            <?= e(date('d/m/Y H:i', strtotime($svc['fecha_hora_programada']))) ?>
+                          <?php else: ?>
+                            —
+                          <?php endif; ?>
+                        </td>
+                        <td class="small text-muted"><?= e($svc['auxiliar_nombre'] ?: '—') ?></td>
+                        <td class="pe-3">
+                          <a href="?r=servicio_asignaciones.ver&id=<?= (int)$svc['id_servicio'] ?>" class="btn btn-xs btn-outline-primary btn-sm py-0 px-2">Asignación</a>
+                        </td>
+                      </tr>
+                    <?php endforeach; ?>
+                  </tbody>
+                </table>
+              </div>
+            <?php endif; ?>
+          </div>
+        </div>
+      </div>
+
+      <!-- Inventario lateral -->
+      <div class="col-12 col-xl-4">
+        <div class="vstack gap-3">
+
+          <!-- Cajas / Ataúdes -->
+          <div class="card shadow-sm">
+            <div class="card-header d-flex justify-content-between align-items-center py-2">
+              <span class="fw-semibold">Ataúdes disponibles</span>
+              <span class="badge text-bg-<?= $cajasDisp > 0 ? 'success' : 'danger' ?>"><?= $cajasDisp ?></span>
+            </div>
+            <?php if (!empty($cajasState['items'])): ?>
+              <div class="list-group list-group-flush" style="max-height:180px;overflow-y:auto">
+                <?php foreach (array_slice($cajasState['items'], 0, 8) as $caja): ?>
+                  <div class="list-group-item list-group-item-action py-2 d-flex justify-content-between align-items-center">
+                    <div>
+                      <span class="fw-semibold small"><?= e($caja['codigo']) ?></span>
+                      <?php if ($caja['modelo'] ?? ''): ?>
+                        <span class="text-muted small ms-1"><?= e($caja['modelo']) ?></span>
+                      <?php endif; ?>
+                    </div>
+                    <span class="badge text-bg-<?= ($caja['reciclado'] ?? 0) || ($caja['veces_usado'] ?? 0) > 0 ? 'warning text-dark' : 'success' ?> ms-2">
+                      <?= ($caja['reciclado'] ?? 0) || ($caja['veces_usado'] ?? 0) > 0 ? 'Usado' : 'Nuevo' ?>
+                    </span>
+                  </div>
+                <?php endforeach; ?>
+                <?php if (count($cajasState['items']) > 8): ?>
+                  <div class="list-group-item text-muted small text-center py-1">+<?= count($cajasState['items']) - 8 ?> más</div>
+                <?php endif; ?>
+              </div>
+            <?php else: ?>
+              <div class="card-body py-3 text-center text-muted small">Sin ataúdes disponibles.</div>
+            <?php endif; ?>
+          </div>
+
+          <!-- Equipos por grupo -->
+          <div class="card shadow-sm">
+            <div class="card-header py-2">
+              <span class="fw-semibold">Equipos disponibles</span>
+            </div>
+            <?php if (!empty($equiposGrupos)): ?>
+              <div class="list-group list-group-flush" style="max-height:200px;overflow-y:auto">
+                <?php foreach ($equiposGrupos as $grp): ?>
+                  <div class="list-group-item py-2 d-flex justify-content-between align-items-center">
+                    <span class="small"><?= e($grp['equipo']) ?></span>
+                    <span class="badge text-bg-<?= (int)($grp['disponibles'] ?? 0) > 0 ? 'primary' : 'secondary' ?>">
+                      <?= (int)($grp['disponibles'] ?? 0) ?>
+                    </span>
+                  </div>
+                <?php endforeach; ?>
+              </div>
+            <?php else: ?>
+              <div class="card-body py-3 text-center text-muted small">Sin equipos registrados.</div>
+            <?php endif; ?>
+          </div>
+
+          <!-- Artículos con stock bajo -->
+          <?php if (!empty($articulosBajos)): ?>
+            <div class="card shadow-sm border-danger">
+              <div class="card-header py-2 bg-danger bg-opacity-10">
+                <span class="fw-semibold text-danger">Stock bajo (≤ 5 piezas)</span>
+              </div>
+              <div class="list-group list-group-flush" style="max-height:160px;overflow-y:auto">
+                <?php foreach ($articulosBajos as $art): ?>
+                  <div class="list-group-item py-2 d-flex justify-content-between align-items-center">
+                    <span class="small"><?= e($art['articulo']) ?></span>
+                    <span class="badge text-bg-<?= (int)$art['existencias'] === 0 ? 'danger' : 'warning text-dark' ?>">
+                      <?= (int)$art['existencias'] ?>
+                    </span>
+                  </div>
+                <?php endforeach; ?>
+              </div>
+            </div>
+          <?php endif; ?>
+
+        </div>
+      </div>
+
+    </div>
+  </div>
+  <?php
+  render('Panel auxiliar', ob_get_clean());
+  return;
+}
 
 ob_start(); ?>
 <style>
