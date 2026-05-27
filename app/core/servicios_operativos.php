@@ -4,6 +4,7 @@ require_once __DIR__.'/db.php';
 require_once __DIR__.'/helpers.php';
 require_once __DIR__.'/auth.php';
 require_once __DIR__.'/inventario_v2.php';
+require_once __DIR__.'/almacenes.php';
 
 function so_table_exists(string $table): bool {
   return db_table_exists($table);
@@ -303,6 +304,8 @@ function so_create_tables(bool $force = false): void {
         referencia VARCHAR(120) DEFAULT NULL,
         origen VARCHAR(100) DEFAULT NULL,
         destino VARCHAR(100) DEFAULT NULL,
+        id_almacen_origen INT DEFAULT NULL,
+        id_almacen_destino INT DEFAULT NULL,
         notas TEXT DEFAULT NULL,
         created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
       )
@@ -347,6 +350,8 @@ function so_create_tables(bool $force = false): void {
         id_servicio INT DEFAULT NULL,
         origen VARCHAR(100) DEFAULT NULL,
         destino VARCHAR(100) DEFAULT NULL,
+        id_almacen_origen INT DEFAULT NULL,
+        id_almacen_destino INT DEFAULT NULL,
         notas TEXT DEFAULT NULL,
         created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
       )
@@ -438,6 +443,10 @@ function so_create_tables(bool $force = false): void {
   db_add_index_if_missing('servicio_asignacion', 'idx_servicio_asignacion_servicio', 'INDEX idx_servicio_asignacion_servicio (id_servicio)');
   db_add_index_if_missing('servicio_seguimiento', 'idx_servicio_seguimiento_servicio', 'INDEX idx_servicio_seguimiento_servicio (id_servicio)');
   db_add_index_if_missing('servicio_cierre', 'idx_servicio_cierre_servicio', 'INDEX idx_servicio_cierre_servicio (id_servicio)');
+  db_add_column_if_missing('articulos_movimientos', 'id_almacen_origen', "INT DEFAULT NULL");
+  db_add_column_if_missing('articulos_movimientos', 'id_almacen_destino', "INT DEFAULT NULL");
+  db_add_column_if_missing('equipos_movimientos', 'id_almacen_origen', "INT DEFAULT NULL");
+  db_add_column_if_missing('equipos_movimientos', 'id_almacen_destino', "INT DEFAULT NULL");
   db_add_index_if_missing('articulos_movimientos', 'idx_articulos_movimientos_articulo', 'INDEX idx_articulos_movimientos_articulo (id_articulo, created_at)');
   db_add_index_if_missing('articulos_salida_servicio', 'idx_articulos_salida_servicio_servicio', 'INDEX idx_articulos_salida_servicio_servicio (id_servicio, created_at)');
   db_add_index_if_missing('cajas_movimientos', 'idx_cajas_movimientos_codigo_servicio', 'INDEX idx_cajas_movimientos_codigo_servicio (codigo, id_servicio, created_at)');
@@ -966,9 +975,20 @@ function so_registrar_mov_caja(PDO $pdo, string $codigo, string $tipo, ?int $id_
   $stmt->execute([$codigo, $tipo, $id_servicio, $notas]);
 }
 
-function so_registrar_mov_equipo(PDO $pdo, string $id_equipo, string $tipo, ?int $id_servicio = null, ?string $origen = null, ?string $destino = null, ?string $notas = null): void {
-  $stmt = $pdo->prepare("INSERT INTO equipos_movimientos (id_equipo,tipo,id_servicio,origen,destino,notas) VALUES (?,?,?,?,?,?)");
-  $stmt->execute([$id_equipo, $tipo, $id_servicio, $origen, $destino, $notas]);
+function so_registrar_mov_equipo(PDO $pdo, string $id_equipo, string $tipo, ?int $id_servicio = null, ?string $origen = null, ?string $destino = null, ?string $notas = null, ?int $idAlmacenOrigen = null, ?int $idAlmacenDestino = null): void {
+  $columns = ['id_equipo','tipo','id_servicio','origen','destino','notas'];
+  $values = [$id_equipo, $tipo, $id_servicio, $origen, $destino, $notas];
+  if (db_column_exists('equipos_movimientos', 'id_almacen_origen')) {
+    $columns[] = 'id_almacen_origen';
+    $values[] = $idAlmacenOrigen;
+  }
+  if (db_column_exists('equipos_movimientos', 'id_almacen_destino')) {
+    $columns[] = 'id_almacen_destino';
+    $values[] = $idAlmacenDestino;
+  }
+  $placeholders = implode(',', array_fill(0, count($columns), '?'));
+  $stmt = $pdo->prepare("INSERT INTO equipos_movimientos (".implode(',', $columns).") VALUES ({$placeholders})");
+  $stmt->execute($values);
 }
 
 function so_registrar_articulo_servicio(PDO $pdo, int $id_servicio, int $id_articulo, int $cantidad, string $responsable, ?string $notas = null): void {
@@ -1151,27 +1171,42 @@ function so_cerrar_servicio_recursos(PDO $pdo, int $id_servicio, array $opciones
   $resultado = [
     'caja' => null,
     'equipos' => [],
+    'equipos_baja' => [],
     'articulos' => [],
   ];
-  if (iv2_servicio_tiene_registros('servicio_caja', $id_servicio) || iv2_servicio_tiene_registros('renta_cajas', $id_servicio)) {
+
+  $idAlmacenDestino = (int)($opciones['id_almacen_destino'] ?? 0) ?: null;
+  $destinoAlmacen = trim((string)($opciones['destino_almacen'] ?? ''));
+  if ($destinoAlmacen === '' && $idAlmacenDestino !== null) {
+    $destinoAlmacen = almacen_nombre($idAlmacenDestino) ?: '';
+  }
+  if ($destinoAlmacen === '') {
+    $destinoAlmacen = 'almacen';
+  }
+
+  $procesarCaja = array_key_exists('procesar_caja', $opciones) ? !empty($opciones['procesar_caja']) : true;
+  if ($procesarCaja && (iv2_servicio_tiene_registros('servicio_caja', $id_servicio) || iv2_servicio_tiene_registros('renta_cajas', $id_servicio))) {
     $accionCaja = trim((string)($opciones['accion_caja'] ?? 'retorna')) ?: 'retorna';
     $recicladoCaja = array_key_exists('reciclado_caja', $opciones) ? (int)$opciones['reciclado_caja'] : 1;
     $observacionesCaja = trim((string)($opciones['observaciones_caja'] ?? '')) ?: 'Cierre de servicio';
     $resultado['caja'] = iv2_cerrar_caja_servicio($pdo, $id_servicio, $accionCaja, $recicladoCaja, $observacionesCaja, so_current_user_id());
+    if ($accionCaja === 'retorna' && $idAlmacenDestino !== null && !empty($resultado['caja']['codigo_caja'])) {
+      almacen_update_item_location('cajas', 'codigo', $resultado['caja']['codigo_caja'], $idAlmacenDestino, $destinoAlmacen, 'ubicacion');
+    }
     iv2_assert_cierre_permitido($id_servicio);
   }
 
   $usaEquiposV2 = iv2_servicio_tiene_registros('servicio_equipo', $id_servicio);
+  $idsEquipo = $opciones['ids_equipo'] ?? [];
+  $liberarTodos = !empty($opciones['liberar_todos_equipos']);
+  $idsEquipo = array_values(array_unique(array_filter(array_map(static fn($value): string => trim((string)$value), is_array($idsEquipo) ? $idsEquipo : []))));
   if ($usaEquiposV2) {
-    $idsEquipo = $opciones['ids_equipo'] ?? [];
-    $liberarTodos = !empty($opciones['liberar_todos_equipos']);
     if ($liberarTodos) {
       $pendientes = so_pendientes_devolucion_equipos($id_servicio);
       $idsEquipo = array_column($pendientes, 'id_equipo');
     }
-    $idsEquipo = array_values(array_unique(array_filter(array_map(static fn($value): string => trim((string)$value), is_array($idsEquipo) ? $idsEquipo : []))));
     if (!empty($idsEquipo)) {
-      $resultado['equipos'] = iv2_cancelar_equipos($pdo, $id_servicio, $idsEquipo, so_current_user_id(), 'Cierre de servicio', 'devolucion');
+      $resultado['equipos'] = iv2_cancelar_equipos($pdo, $id_servicio, $idsEquipo, so_current_user_id(), 'Cierre de servicio', 'devolucion', $destinoAlmacen, $idAlmacenDestino);
     }
   }
 
@@ -1190,17 +1225,67 @@ function so_cerrar_servicio_recursos(PDO $pdo, int $id_servicio, array $opciones
         trim((string)($item['observaciones'] ?? '')) ?: 'Devolucion en cierre de servicio',
         'devolucion'
       );
+      $last = $resultado['articulos'][count($resultado['articulos']) - 1] ?? null;
+      if ($idAlmacenDestino !== null && !empty($last['id_articulo'])) {
+        almacen_update_item_location('articulos', 'id', (int)$last['id_articulo'], $idAlmacenDestino, null, null);
+      }
     }
   }
 
   if (!$usaEquiposV2) {
     $equipos = so_pendientes_devolucion_equipos($id_servicio);
+    $idsSeleccionados = $liberarTodos ? array_column($equipos, 'id_equipo') : $idsEquipo;
+    $idsSeleccionadosMap = array_fill_keys(array_map('strval', $idsSeleccionados), true);
     foreach ($equipos as $equipo) {
-      so_registrar_mov_equipo($pdo, $equipo['id_equipo'], 'devolucion', $id_servicio, null, 'almacen', 'Cierre de servicio');
-      q("UPDATE equipos SET estatus='disponible', updated_at=CURRENT_TIMESTAMP() WHERE id_equipo=?", [$equipo['id_equipo']]);
+      if (empty($idsSeleccionadosMap[(string)$equipo['id_equipo']])) continue;
+      so_registrar_mov_equipo($pdo, $equipo['id_equipo'], 'devolucion', $id_servicio, 'servicio', $destinoAlmacen, 'Cierre de servicio', null, $idAlmacenDestino);
+      $setEquipo = ["estatus='disponible'", "ubicacion=?"];
+      $paramsEquipo = [$destinoAlmacen];
+      if (db_column_exists('equipos', 'id_almacen')) {
+        $setEquipo[] = 'id_almacen=?';
+        $paramsEquipo[] = $idAlmacenDestino;
+      }
+      $setEquipo[] = 'updated_at=CURRENT_TIMESTAMP()';
+      $paramsEquipo[] = $equipo['id_equipo'];
+      q("UPDATE equipos SET ".implode(', ', $setEquipo)." WHERE id_equipo=?", $paramsEquipo);
+      $resultado['equipos'][] = [
+        'id_equipo' => $equipo['id_equipo'],
+        'equipo' => $equipo['equipo'] ?? '',
+        'tipo_evento' => 'devolucion',
+      ];
     }
   }
-  if ($usaEquiposV2 && !empty(so_pendientes_devolucion_equipos($id_servicio))) {
+
+  $bajaPendientes = !empty($opciones['baja_equipos_pendientes']);
+  $pendientesFinales = so_pendientes_devolucion_equipos($id_servicio);
+  if ($bajaPendientes && !empty($pendientesFinales)) {
+    $notaBaja = trim((string)($opciones['observaciones_baja_equipos'] ?? '')) ?: 'Equipo no retorna por dano al cierre de servicio';
+    $idsBaja = array_column($pendientesFinales, 'id_equipo');
+    if ($usaEquiposV2) {
+      $resultado['equipos_baja'] = iv2_baja_equipos_no_retorno($pdo, $id_servicio, $idsBaja, so_current_user_id(), $notaBaja);
+    } else {
+      foreach ($pendientesFinales as $equipo) {
+        so_registrar_mov_equipo($pdo, $equipo['id_equipo'], 'baja_por_dano', $id_servicio, 'servicio', 'baja', $notaBaja);
+        $setEquipo = ["estatus='baja'", "ubicacion=?"];
+        $paramsEquipo = ['Baja por dano / no retorno'];
+        if (db_column_exists('equipos', 'id_almacen')) {
+          $setEquipo[] = 'id_almacen=NULL';
+        }
+        $setEquipo[] = 'updated_at=CURRENT_TIMESTAMP()';
+        $paramsEquipo[] = $equipo['id_equipo'];
+        q("UPDATE equipos SET ".implode(', ', $setEquipo)." WHERE id_equipo=?", $paramsEquipo);
+        $resultado['equipos_baja'][] = [
+          'id_equipo' => $equipo['id_equipo'],
+          'equipo' => $equipo['equipo'] ?? '',
+          'tipo_evento' => 'baja_por_dano',
+        ];
+      }
+    }
+    $pendientesFinales = so_pendientes_devolucion_equipos($id_servicio);
+  }
+
+  $permitirEquiposPendientes = !empty($opciones['permitir_equipos_pendientes']);
+  if ($usaEquiposV2 && !$permitirEquiposPendientes && !empty($pendientesFinales)) {
     throw new RuntimeException('Aun hay equipos activos por devolver antes de cerrar el servicio.');
   }
   return $resultado;

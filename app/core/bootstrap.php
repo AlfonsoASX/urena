@@ -15,7 +15,13 @@ require __DIR__.'/servicios_operativos.php';
 
 db_perf_boot();
 so_ensure_runtime_schema_compat();
+
+// Siempre registrar el repair de auth para que db_prepare_execute pueda
+// auto-corregir columnas faltantes (ej. puesto) aunque el modo sea ondemand.
+db_register_schema_repair('auth', fn() => auth_bootstrap(true));
+
 if (db_schema_bootstrap_on_request()) {
+  auth_bootstrap(true);
   inventario_schema_bootstrap(true);
   iv2_bootstrap(true);
   so_bootstrap(true);

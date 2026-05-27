@@ -14,6 +14,37 @@ function inventario_schema_bootstrap(bool $force = false): void {
 
   try {
     q("
+      CREATE TABLE IF NOT EXISTS almacenes (
+        id_almacen INT AUTO_INCREMENT PRIMARY KEY,
+        codigo VARCHAR(40) DEFAULT NULL,
+        nombre VARCHAR(120) NOT NULL,
+        descripcion TEXT DEFAULT NULL,
+        activo TINYINT(1) NOT NULL DEFAULT 1,
+        eliminado TINYINT(1) NOT NULL DEFAULT 0,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY uq_almacenes_codigo (codigo)
+      )
+    ");
+    db_invalidate_schema_cache('almacenes');
+    db_schema_snapshot_clear_file();
+  } catch (Throwable $e) {
+  }
+  foreach ([
+    'codigo' => "VARCHAR(40) DEFAULT NULL",
+    'nombre' => "VARCHAR(120) NOT NULL DEFAULT ''",
+    'descripcion' => "TEXT DEFAULT NULL",
+    'activo' => "TINYINT(1) NOT NULL DEFAULT 1",
+    'eliminado' => "TINYINT(1) NOT NULL DEFAULT 0",
+    'created_at' => "TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP",
+    'updated_at' => "TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP",
+  ] as $column => $ddl) {
+    db_add_column_if_missing('almacenes', $column, $ddl);
+  }
+  db_add_index_if_missing('almacenes', 'idx_almacenes_activo', 'INDEX idx_almacenes_activo (eliminado, activo, nombre)');
+
+  try {
+    q("
       CREATE TABLE IF NOT EXISTS articulos (
         id INT AUTO_INCREMENT PRIMARY KEY,
         articulo VARCHAR(120) NOT NULL,
@@ -22,6 +53,7 @@ function inventario_schema_bootstrap(bool $force = false): void {
         existencias INT NOT NULL DEFAULT 0,
         foto VARCHAR(255) DEFAULT NULL,
         id_proveedor INT DEFAULT NULL,
+        id_almacen INT DEFAULT NULL,
         eliminado TINYINT(1) NOT NULL DEFAULT 0,
         updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
       )
@@ -35,11 +67,13 @@ function inventario_schema_bootstrap(bool $force = false): void {
     'existencias' => "INT NOT NULL DEFAULT 0",
     'foto' => "VARCHAR(255) DEFAULT NULL",
     'id_proveedor' => "INT DEFAULT NULL",
+    'id_almacen' => "INT DEFAULT NULL",
     'eliminado' => "TINYINT(1) NOT NULL DEFAULT 0",
     'updated_at' => "TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP",
   ] as $column => $ddl) {
     db_add_column_if_missing('articulos', $column, $ddl);
   }
+  db_add_index_if_missing('articulos', 'idx_articulos_almacen', 'INDEX idx_articulos_almacen (id_almacen)');
 
   try {
     q("
@@ -50,6 +84,7 @@ function inventario_schema_bootstrap(bool $force = false): void {
         ubicacion VARCHAR(120) DEFAULT NULL,
         color VARCHAR(60) DEFAULT NULL,
         id_proveedor INT DEFAULT NULL,
+        id_almacen INT DEFAULT NULL,
         proveedor VARCHAR(120) DEFAULT NULL,
         costo DECIMAL(12,2) NOT NULL DEFAULT 0,
         es_rentado TINYINT(1) NOT NULL DEFAULT 0,
@@ -69,6 +104,7 @@ function inventario_schema_bootstrap(bool $force = false): void {
     'ubicacion' => "VARCHAR(120) DEFAULT NULL",
     'color' => "VARCHAR(60) DEFAULT NULL",
     'id_proveedor' => "INT DEFAULT NULL",
+    'id_almacen' => "INT DEFAULT NULL",
     'proveedor' => "VARCHAR(120) DEFAULT NULL",
     'costo' => "DECIMAL(12,2) NOT NULL DEFAULT 0",
     'es_rentado' => "TINYINT(1) NOT NULL DEFAULT 0",
@@ -81,6 +117,7 @@ function inventario_schema_bootstrap(bool $force = false): void {
   ] as $column => $ddl) {
     db_add_column_if_missing('cajas', $column, $ddl);
   }
+  db_add_index_if_missing('cajas', 'idx_cajas_almacen', 'INDEX idx_cajas_almacen (id_almacen)');
 
   try {
     q("
@@ -89,6 +126,7 @@ function inventario_schema_bootstrap(bool $force = false): void {
         equipo VARCHAR(120) NOT NULL,
         estatus VARCHAR(30) NOT NULL DEFAULT 'disponible',
         ubicacion VARCHAR(120) DEFAULT NULL,
+        id_almacen INT DEFAULT NULL,
         foto VARCHAR(255) DEFAULT NULL,
         eliminado TINYINT(1) NOT NULL DEFAULT 0,
         updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
@@ -100,12 +138,14 @@ function inventario_schema_bootstrap(bool $force = false): void {
     'equipo' => "VARCHAR(120) NOT NULL DEFAULT ''",
     'estatus' => "VARCHAR(30) NOT NULL DEFAULT 'disponible'",
     'ubicacion' => "VARCHAR(120) DEFAULT NULL",
+    'id_almacen' => "INT DEFAULT NULL",
     'foto' => "VARCHAR(255) DEFAULT NULL",
     'eliminado' => "TINYINT(1) NOT NULL DEFAULT 0",
     'updated_at' => "TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP",
   ] as $column => $ddl) {
     db_add_column_if_missing('equipos', $column, $ddl);
   }
+  db_add_index_if_missing('equipos', 'idx_equipos_almacen', 'INDEX idx_equipos_almacen (id_almacen)');
 
   try {
     q("
@@ -113,11 +153,23 @@ function inventario_schema_bootstrap(bool $force = false): void {
         id_traspaso INT AUTO_INCREMENT PRIMARY KEY,
         origen VARCHAR(120) NOT NULL,
         destino VARCHAR(120) NOT NULL,
+        id_almacen_origen INT DEFAULT NULL,
+        id_almacen_destino INT DEFAULT NULL,
         responsable VARCHAR(120) DEFAULT NULL,
         created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
       )
     ");
   } catch (Throwable $e) {
+  }
+  foreach ([
+    'origen' => "VARCHAR(120) NOT NULL DEFAULT ''",
+    'destino' => "VARCHAR(120) NOT NULL DEFAULT ''",
+    'id_almacen_origen' => "INT DEFAULT NULL",
+    'id_almacen_destino' => "INT DEFAULT NULL",
+    'responsable' => "VARCHAR(120) DEFAULT NULL",
+    'created_at' => "TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP",
+  ] as $column => $ddl) {
+    db_add_column_if_missing('articulos_traspasos', $column, $ddl);
   }
 
   try {

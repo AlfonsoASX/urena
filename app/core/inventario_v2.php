@@ -1068,6 +1068,7 @@ function iv2_equipo_row(string $idEquipo, bool $forUpdate = false): ?array {
     'equipo',
     "estatus AS estado_actual",
     'ubicacion',
+    iv2_has_column('equipos', 'id_almacen') ? "id_almacen" : "NULL AS id_almacen",
     "COALESCE(eliminado,0) AS eliminado",
   ];
   $sql = "SELECT ".implode(', ', $columns)." FROM equipos WHERE id_equipo=? LIMIT 1";
@@ -1116,7 +1117,20 @@ function iv2_asignar_equipo(PDO $pdo, int $id_servicio, string $idEquipo, ?int $
     [$id_servicio, $idEquipo, iv2_now(), $id_usuario, $observaciones]
   );
 
-  q("UPDATE equipos SET estatus='ocupado', updated_at=CURRENT_TIMESTAMP() WHERE id_equipo=?", [$idEquipo]);
+  $setEquipo = ["estatus='ocupado'"];
+  $paramsEquipo = [];
+  if (iv2_has_column('equipos', 'ubicacion')) {
+    $setEquipo[] = 'ubicacion=?';
+    $paramsEquipo[] = 'Servicio #'.$id_servicio;
+  }
+  if (iv2_has_column('equipos', 'id_almacen')) {
+    $setEquipo[] = 'id_almacen=NULL';
+  }
+  if (iv2_has_column('equipos', 'updated_at')) {
+    $setEquipo[] = 'updated_at=CURRENT_TIMESTAMP()';
+  }
+  $paramsEquipo[] = $idEquipo;
+  q("UPDATE equipos SET ".implode(', ', $setEquipo)." WHERE id_equipo=?", $paramsEquipo);
   $rowId = (int)$pdo->lastInsertId();
   iv2_registrar_evento_equipo($id_servicio, $rowId > 0 ? $rowId : null, $idEquipo, 'asignacion', $id_usuario, $observaciones);
 
@@ -1158,7 +1172,23 @@ function iv2_asignar_equipos_por_grupo(PDO $pdo, int $id_servicio, string $grupo
   return iv2_asignar_equipos($pdo, $id_servicio, $ids, $id_usuario, $observaciones);
 }
 
-function iv2_cancelar_equipos(PDO $pdo, int $id_servicio, array $idsEquipo, ?int $id_usuario = null, ?string $observaciones = null, string $tipoEvento = 'cancelacion'): array {
+function iv2_registrar_movimiento_equipo(string $idEquipo, string $tipo, ?int $idServicio = null, ?string $origen = null, ?string $destino = null, ?string $notas = null, ?int $idAlmacenOrigen = null, ?int $idAlmacenDestino = null): void {
+  if (!db_table_exists('equipos_movimientos')) return;
+  $columns = ['id_equipo','tipo','id_servicio','origen','destino','notas'];
+  $values = [$idEquipo, $tipo, $idServicio, $origen, $destino, $notas];
+  if (db_column_exists('equipos_movimientos', 'id_almacen_origen')) {
+    $columns[] = 'id_almacen_origen';
+    $values[] = $idAlmacenOrigen;
+  }
+  if (db_column_exists('equipos_movimientos', 'id_almacen_destino')) {
+    $columns[] = 'id_almacen_destino';
+    $values[] = $idAlmacenDestino;
+  }
+  $placeholders = implode(',', array_fill(0, count($columns), '?'));
+  q("INSERT INTO equipos_movimientos (".implode(',', $columns).") VALUES ({$placeholders})", $values);
+}
+
+function iv2_cancelar_equipos(PDO $pdo, int $id_servicio, array $idsEquipo, ?int $id_usuario = null, ?string $observaciones = null, string $tipoEvento = 'cancelacion', ?string $destinoUbicacion = null, ?int $idAlmacenDestino = null): array {
   iv2_bootstrap();
   $idColumn = iv2_servicio_equipo_id_column() ?? 'id';
   $idsEquipo = array_values(array_unique(array_filter(array_map(static fn($value): string => trim((string)$value), $idsEquipo))));
@@ -1185,12 +1215,79 @@ function iv2_cancelar_equipos(PDO $pdo, int $id_servicio, array $idsEquipo, ?int
        WHERE {$idColumn}=?",
       [iv2_now(), $id_usuario, $observaciones, $row['row_id']]
     );
-    q("UPDATE equipos SET estatus='disponible', updated_at=CURRENT_TIMESTAMP() WHERE id_equipo=?", [$idEquipo]);
+    $setEquipo = ["estatus='disponible'"];
+    $paramsEquipo = [];
+    if (iv2_has_column('equipos', 'ubicacion')) {
+      $setEquipo[] = 'ubicacion=?';
+      $paramsEquipo[] = $destinoUbicacion ?: 'almacen';
+    }
+    if (iv2_has_column('equipos', 'id_almacen')) {
+      $setEquipo[] = 'id_almacen=?';
+      $paramsEquipo[] = $idAlmacenDestino;
+    }
+    if (iv2_has_column('equipos', 'updated_at')) {
+      $setEquipo[] = 'updated_at=CURRENT_TIMESTAMP()';
+    }
+    $paramsEquipo[] = $idEquipo;
+    q("UPDATE equipos SET ".implode(', ', $setEquipo)." WHERE id_equipo=?", $paramsEquipo);
     iv2_registrar_evento_equipo($id_servicio, (int)$row['row_id'], $idEquipo, $tipoEvento, $id_usuario, $observaciones);
+    iv2_registrar_movimiento_equipo($idEquipo, $tipoEvento === 'devolucion' ? 'devolucion' : $tipoEvento, $id_servicio, 'servicio', $destinoUbicacion ?: 'almacen', $observaciones, null, $idAlmacenDestino);
     $out[] = [
       'id_equipo' => $idEquipo,
       'equipo' => $row['equipo'] ?? '',
       'tipo_evento' => $tipoEvento,
+    ];
+  }
+  return $out;
+}
+
+function iv2_baja_equipos_no_retorno(PDO $pdo, int $id_servicio, array $idsEquipo, ?int $id_usuario = null, ?string $observaciones = null): array {
+  iv2_bootstrap();
+  $idColumn = iv2_servicio_equipo_id_column() ?? 'id';
+  $idsEquipo = array_values(array_unique(array_filter(array_map(static fn($value): string => trim((string)$value), $idsEquipo))));
+  if (empty($idsEquipo)) return [];
+
+  $out = [];
+  foreach ($idsEquipo as $idEquipo) {
+    $row = qone(
+      "SELECT se.{$idColumn} AS row_id, se.id_equipo, e.equipo
+       FROM servicio_equipo se
+       LEFT JOIN equipos e ON e.id_equipo = se.id_equipo
+       WHERE se.id_servicio=? AND se.id_equipo=? AND se.fecha_liberacion IS NULL
+       ".iv2_order_sql('servicio_equipo', 'se', ['fecha_asignacion', 'updated_at', 'created_at', $idColumn])."
+       LIMIT 1 FOR UPDATE",
+      [$id_servicio, $idEquipo]
+    );
+    if (!$row) continue;
+    $nota = trim((string)$observaciones) ?: 'Equipo no retorna por dano al cierre';
+    q(
+      "UPDATE servicio_equipo
+       SET fecha_liberacion=?, id_usuario=?, observaciones=?, updated_at=CURRENT_TIMESTAMP()
+       WHERE {$idColumn}=?",
+      [iv2_now(), $id_usuario, $nota, $row['row_id']]
+    );
+
+    $setEquipo = ["estatus='baja'"];
+    $paramsEquipo = [];
+    if (iv2_has_column('equipos', 'ubicacion')) {
+      $setEquipo[] = 'ubicacion=?';
+      $paramsEquipo[] = 'Baja por dano / no retorno';
+    }
+    if (iv2_has_column('equipos', 'id_almacen')) {
+      $setEquipo[] = 'id_almacen=NULL';
+    }
+    if (iv2_has_column('equipos', 'updated_at')) {
+      $setEquipo[] = 'updated_at=CURRENT_TIMESTAMP()';
+    }
+    $paramsEquipo[] = $idEquipo;
+    q("UPDATE equipos SET ".implode(', ', $setEquipo)." WHERE id_equipo=?", $paramsEquipo);
+
+    iv2_registrar_evento_equipo($id_servicio, (int)$row['row_id'], $idEquipo, 'baja_por_dano', $id_usuario, $nota);
+    iv2_registrar_movimiento_equipo($idEquipo, 'baja_por_dano', $id_servicio, 'servicio', 'baja', $nota);
+    $out[] = [
+      'id_equipo' => $idEquipo,
+      'equipo' => $row['equipo'] ?? '',
+      'tipo_evento' => 'baja_por_dano',
     ];
   }
   return $out;

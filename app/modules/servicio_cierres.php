@@ -4,8 +4,10 @@ require_once __DIR__.'/../core/helpers.php';
 require_once __DIR__.'/../core/ui.php';
 require_once __DIR__.'/../core/auth.php';
 require_once __DIR__.'/../core/servicios_operativos.php';
+require_once __DIR__.'/../core/almacenes.php';
 
 require_login();
+almacenes_ensure_schema();
 
 $action = $action ?? 'ver';
 require_role(['administradora','auxiliar','coordinador','caja']);
@@ -37,6 +39,61 @@ case 'devolver_caja':
   redirect('servicio_cierres.ver&id='.$id);
   break;
 
+case 'retornar_parcial':
+  $id = (int)($_GET['id'] ?? $_POST['id'] ?? 0);
+  $svc = so_servicio_fetch($id);
+  if (!$svc) {
+    flash("<div class='alert alert-warning'>Servicio no encontrado.</div>");
+    redirect('servicios.listar');
+  }
+  try { csrf_verify(); } catch (RuntimeException $e) { flash("<div class='alert alert-danger'>Sesion invalida.</div>"); redirect('servicio_cierres.ver&id='.$id); }
+
+  $articulosInput = [];
+  foreach ((array)($_POST['articulos'] ?? []) as $idServicioArticulo => $row) {
+    $cantidad = max(0, (int)($row['cantidad'] ?? 0));
+    if ($cantidad <= 0) continue;
+    $articulosInput[] = [
+      'id_servicio_articulo' => (int)$idServicioArticulo,
+      'cantidad' => $cantidad,
+      'observaciones' => trim((string)($row['observaciones'] ?? '')) ?: 'Devolucion parcial de articulo',
+    ];
+  }
+
+  try {
+    [$idAlmacenDestino, $destinoAlmacen] = almacen_resolver_post('id_almacen_destino', false);
+  } catch (RuntimeException $e) {
+    flash("<div class='alert alert-warning'>".e($e->getMessage())."</div>");
+    redirect('servicio_cierres.ver&id='.$id);
+  }
+
+  $opcionesRecursos = [
+    'accion_caja' => trim((string)($_POST['accion_caja'] ?? 'retorna')) ?: 'retorna',
+    'reciclado_caja' => so_parse_checkbox($_POST['reciclado_caja'] ?? 1),
+    'observaciones_caja' => trim((string)($_POST['observaciones_caja'] ?? '')) ?: 'Retorno parcial de servicio',
+    'ids_equipo' => array_values(array_unique(array_filter(array_map('trim', (array)($_POST['ids_equipo'] ?? []))))),
+    'liberar_todos_equipos' => so_parse_checkbox($_POST['liberar_todos_equipos'] ?? null),
+    'id_almacen_destino' => $idAlmacenDestino,
+    'destino_almacen' => $destinoAlmacen,
+    'procesar_caja' => so_parse_checkbox($_POST['procesar_caja'] ?? null),
+    'baja_equipos_pendientes' => false,
+    'permitir_equipos_pendientes' => true,
+    'articulos' => $articulosInput,
+  ];
+
+  $pdo = db();
+  try {
+    $pdo->beginTransaction();
+    $resultadoRecursos = so_cerrar_servicio_recursos($pdo, $id, $opcionesRecursos);
+    so_log_bitacora($id, 'retorno_parcial', 'Retornos parciales registrados', $resultadoRecursos);
+    $pdo->commit();
+    flash("<div class='alert alert-success'>Retornos parciales guardados. El servicio sigue abierto para cierre final.</div>");
+  } catch (Throwable $e) {
+    if ($pdo->inTransaction()) $pdo->rollBack();
+    flash("<div class='alert alert-danger'>No se pudieron guardar los retornos parciales: ".e($e->getMessage())."</div>");
+  }
+  redirect('servicio_cierres.ver&id='.$id);
+  break;
+
 case 'guardar':
   $id = (int)($_GET['id'] ?? $_POST['id'] ?? 0);
   $svc = so_servicio_fetch($id);
@@ -57,12 +114,24 @@ case 'guardar':
     ];
   }
 
+  try {
+    [$idAlmacenDestino, $destinoAlmacen] = almacen_resolver_post('id_almacen_destino', false);
+  } catch (RuntimeException $e) {
+    flash("<div class='alert alert-warning'>".e($e->getMessage())."</div>");
+    redirect('servicio_cierres.ver&id='.$id);
+  }
+
   $opcionesRecursos = [
     'accion_caja' => trim((string)($_POST['accion_caja'] ?? 'retorna')) ?: 'retorna',
     'reciclado_caja' => so_parse_checkbox($_POST['reciclado_caja'] ?? 1),
     'observaciones_caja' => trim((string)($_POST['observaciones_caja'] ?? '')) ?: 'Cierre de servicio',
     'ids_equipo' => array_values(array_unique(array_filter(array_map('trim', (array)($_POST['ids_equipo'] ?? []))))),
     'liberar_todos_equipos' => so_parse_checkbox($_POST['liberar_todos_equipos'] ?? null),
+    'id_almacen_destino' => $idAlmacenDestino,
+    'destino_almacen' => $destinoAlmacen,
+    'procesar_caja' => true,
+    'baja_equipos_pendientes' => true,
+    'observaciones_baja_equipos' => trim((string)($_POST['observaciones_baja_equipos'] ?? '')) ?: 'Equipo no retorna por dano al cierre',
     'articulos' => $articulosInput,
   ];
 
@@ -113,6 +182,7 @@ default:
   $articulos = so_servicio_articulos_asignados($id);
   $auxiliares = so_user_options(['administradora','auxiliar','coordinador']);
   $cajaActiva = $cajas[0] ?? null;
+  $almacenRetornoOpts = almacenes_options(null, 'Selecciona almacen');
 
   ob_start(); ?>
   <div class="d-flex flex-column flex-lg-row justify-content-between align-items-lg-center gap-3 mb-3">
@@ -141,10 +211,15 @@ default:
           <?= csrf_field() ?>
           <?= form_input('fecha_cierre','Fecha y hora de cierre',so_datetime_to_input($cierre['fecha_cierre'] ?? $svc['closed_at'] ?? so_now_local()),['type'=>'datetime-local']) ?>
           <?= form_select('id_usuario_auxiliar','Auxiliar que confirma',$auxiliares,(string)($cierre['id_usuario_auxiliar'] ?? $svc['id_usuario_auxiliar'] ?? ''),['class'=>'form-select']) ?>
+          <?= form_select('id_almacen_destino','Almacén de retorno',$almacenRetornoOpts,'',['class'=>'form-select','help'=>'Se usara para articulos y equipos devueltos; el cierre puede finalizar aunque algunos equipos queden en baja por dano.']) ?>
 
           <div class="border rounded p-3 mb-3 bg-light">
             <div class="fw-semibold mb-2">Ataud</div>
             <?php if ($cajaActiva): ?>
+              <div class="form-check mb-2">
+                <input class="form-check-input" type="checkbox" name="procesar_caja" id="procesar_caja" value="1">
+                <label class="form-check-label" for="procesar_caja">Procesar ataud al guardar retorno parcial</label>
+              </div>
               <div class="mb-2"><?= e($cajaActiva['codigo'].' · '.($cajaActiva['modelo'] ?: 'Sin modelo')) ?> <span class="badge text-bg-secondary"><?= e($cajaActiva['ui_estado'] ?? 'Nuevo') ?></span></div>
               <?= form_select('accion_caja','Accion al cerrar',[
                 'retorna' => 'Retorna al inventario reutilizable',
@@ -173,6 +248,7 @@ default:
                   <div class="small text-muted mb-2">IDs: <?= e(implode(', ', $grupo['ids'] ?? [])) ?></div>
                 </div>
               <?php endforeach; ?>
+              <?= form_input('observaciones_baja_equipos','Motivo para equipos no retornados','Equipo no retorna por dano',['placeholder'=>'Se usara al finalizar si quedan equipos activos']) ?>
               <div class="table-responsive">
                 <table class="table table-sm align-middle">
                   <thead><tr><th></th><th>Grupo</th><th>ID pieza</th></tr></thead>
@@ -227,7 +303,11 @@ default:
             <input class="form-check-input" type="checkbox" name="pago_confirmado" id="pago_confirmado" value="1" <?= !empty($cierre['pago_confirmado']) ? 'checked' : ($totales['saldo'] <= 0 ? 'checked' : '') ?>>
             <label class="form-check-label" for="pago_confirmado">Pago total confirmado</label>
           </div>
-          <button class="btn btn-success">Guardar cierre</button>
+          <div class="d-flex flex-wrap gap-2">
+            <button class="btn btn-outline-primary" formaction="?r=servicio_cierres.retornar_parcial&id=<?= (int)$id ?>" formmethod="post">Guardar retornos parciales</button>
+            <button class="btn btn-success">Finalizar servicio</button>
+          </div>
+          <div class="form-text mt-2">Al finalizar, los equipos que sigan activos se marcaran como baja definitiva por no retorno.</div>
         </form>
       </div></div>
     </div>

@@ -56,6 +56,7 @@
         <li><a class="dropdown-item" href="?r=articulos.listar">Articulos</a></li>
         <li><a class="dropdown-item" href="?r=cajas.listar">Ataudes</a></li>
         <li><a class="dropdown-item" href="?r=equipos.listar">Equipos</a></li>
+        <li><a class="dropdown-item" href="?r=almacenes.listar">Almacenes</a></li>
       </ul>
     </li>
   <?php endif; ?>

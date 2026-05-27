@@ -4,8 +4,10 @@ require_once __DIR__.'/../core/db.php';
 require_once __DIR__.'/../core/helpers.php';
 require_once __DIR__.'/../core/ui.php';
 require_once __DIR__.'/../core/auth.php';
+require_once __DIR__.'/../core/almacenes.php';
 
 require_login();
+almacenes_ensure_schema();
 
 $action = $action ?? 'listar';
 
@@ -47,9 +49,20 @@ function articulos_servicio_exists($id_servicio): bool {
   return (bool) qone("SELECT 1 FROM servicios WHERE id_servicio=? AND COALESCE(eliminado,0)=0", [(int)$id_servicio]);
 }
 
-function articulos_log_movimiento(PDO $pdo, int $id_articulo, string $tipo, int $cantidad, ?string $referencia, ?string $origen, ?string $destino, ?string $notas): void {
-  $stmt = $pdo->prepare("INSERT INTO articulos_movimientos (id_articulo,tipo,cantidad,referencia,origen,destino,notas) VALUES (?,?,?,?,?,?,?)");
-  $stmt->execute([$id_articulo,$tipo,$cantidad,$referencia,$origen,$destino,$notas]);
+function articulos_log_movimiento(PDO $pdo, int $id_articulo, string $tipo, int $cantidad, ?string $referencia, ?string $origen, ?string $destino, ?string $notas, ?int $idAlmacenOrigen = null, ?int $idAlmacenDestino = null): void {
+  $columns = ['id_articulo','tipo','cantidad','referencia','origen','destino','notas'];
+  $values = [$id_articulo,$tipo,$cantidad,$referencia,$origen,$destino,$notas];
+  if (db_column_exists('articulos_movimientos', 'id_almacen_origen')) {
+    $columns[] = 'id_almacen_origen';
+    $values[] = $idAlmacenOrigen;
+  }
+  if (db_column_exists('articulos_movimientos', 'id_almacen_destino')) {
+    $columns[] = 'id_almacen_destino';
+    $values[] = $idAlmacenDestino;
+  }
+  $placeholders = implode(',', array_fill(0, count($columns), '?'));
+  $stmt = $pdo->prepare("INSERT INTO articulos_movimientos (".implode(',', $columns).") VALUES ({$placeholders})");
+  $stmt->execute($values);
 }
 
 function articulos_actualizar_stock(PDO $pdo, int $id_articulo, int $delta): void {
@@ -89,6 +102,7 @@ case 'listar':
   $q = trim($_GET['q'] ?? '');
   $categoria = trim($_GET['categoria'] ?? '');
   $proveedor = (int)($_GET['id_proveedor'] ?? 0);
+  $almacen = (int)($_GET['id_almacen'] ?? 0);
   $stock = trim($_GET['stock'] ?? ''); // bajo|agotado
 
   $where = ['a.eliminado=0'];
@@ -107,6 +121,10 @@ case 'listar':
     $where[] = "a.id_proveedor = ?";
     $params[] = $proveedor;
   }
+  if ($almacen > 0) {
+    $where[] = "a.id_almacen = ?";
+    $params[] = $almacen;
+  }
   if ($stock === 'bajo') {
     $where[] = "a.existencias BETWEEN 1 AND 5";
   } elseif ($stock === 'agotado') {
@@ -114,9 +132,11 @@ case 'listar':
   }
 
   $sql = "SELECT a.id, a.articulo, a.marca, a.existencias, a.categoria, a.updated_at,
-                 p.nombre AS proveedor
+                 p.nombre AS proveedor,
+                 al.nombre AS almacen_nombre
           FROM articulos a
           LEFT JOIN proveedores p ON p.id_proveedor=a.id_proveedor
+          LEFT JOIN almacenes al ON al.id_almacen=a.id_almacen
           WHERE ".implode(' AND ', $where)."
           ORDER BY a.id DESC
           LIMIT 300";
@@ -128,7 +148,7 @@ case 'listar':
   foreach ($proveedores as $prov) {
     $proveedor_opts[(string)$prov['id_proveedor']] = $prov['nombre'];
   }
-
+  $almacen_opts = ['0' => 'Todos'] + array_diff_key(almacenes_options(null, 'Todos'), ['' => true]);
   ob_start(); ?>
   <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-2 mb-3">
     <h1 class="h4 m-0">Artículos</h1>
@@ -153,6 +173,9 @@ case 'listar':
     <div class="col-md-2">
       <?= form_select('stock','Stock',[''=>'Todos','bajo'=>'Bajo (&le;5)','agotado'=>'Agotado'],$stock,['class'=>'form-select']) ?>
     </div>
+    <div class="col-md-3">
+      <?= form_select('id_almacen','Almacén',$almacen_opts,(string)$almacen,['class'=>'form-select']) ?>
+    </div>
     <div class="col-12 col-md-2 d-grid">
       <button class="btn btn-outline-primary">Filtrar</button>
     </div>
@@ -167,6 +190,7 @@ case 'listar':
           <th>Marca</th>
           <th>Categoría</th>
           <th>Proveedor</th>
+          <th>Almacén</th>
           <th class="text-end">Existencias</th>
           <th>Actualizado</th>
           <th style="width:220px">Acciones</th>
@@ -180,6 +204,7 @@ case 'listar':
           <td><?= e($r['marca']) ?></td>
           <td><span class="badge bg-secondary text-uppercase"><?= e($r['categoria']) ?></span></td>
           <td><?= e($r['proveedor'] ?? '—') ?></td>
+          <td><?= e($r['almacen_nombre'] ?? '—') ?></td>
           <td class="text-end <?= $r['existencias']<=0?'text-danger fw-bold':($r['existencias']<=5?'text-warning fw-semibold':'') ?>">
             <?= (int)$r['existencias'] ?>
           </td>
@@ -197,7 +222,7 @@ case 'listar':
         </tr>
         <?php endforeach; ?>
         <?php if (empty($rows)): ?>
-        <tr><td colspan="8" class="text-center text-muted">Sin registros</td></tr>
+        <tr><td colspan="9" class="text-center text-muted">Sin registros</td></tr>
         <?php endif; ?>
       </tbody>
     </table>
@@ -212,6 +237,7 @@ case 'nuevo':
   foreach ($proveedores as $prov) {
     $opts[$prov['id_proveedor']] = $prov['nombre'];
   }
+  $almacen_opts = almacenes_options(null, 'Sin almacen');
   ob_start(); ?>
   <div class="card shadow-sm">
     <div class="card-body">
@@ -222,6 +248,7 @@ case 'nuevo':
         <?= form_input('marca','Marca') ?>
         <?= form_select('categoria','Categoría',['general'=>'General','urna'=>'Urna','insumo'=>'Insumo','decoracion'=>'Decoración'],'general',['class'=>'form-select']) ?>
         <?= form_select('id_proveedor','Proveedor',$opts,'',['class'=>'form-select','placeholder'=>'Sin proveedor']) ?>
+        <?= form_select('id_almacen','Almacén',$almacen_opts,'',['class'=>'form-select']) ?>
         <?= form_input('existencias','Existencias iniciales',0,['type'=>'number','min'=>0,'required'=>true]) ?>
         <?= form_input('foto','Foto (ruta opcional)','') ?>
         <div class="d-flex gap-2 mt-3">
@@ -244,6 +271,12 @@ case 'guardar':
   $existencias = max(0, (int)($_POST['existencias'] ?? 0));
   $foto = trim($_POST['foto'] ?? '') ?: null;
   $id_proveedor = (int)($_POST['id_proveedor'] ?? 0) ?: null;
+  try {
+    [$id_almacen, $almacen_nombre] = almacen_resolver_post('id_almacen', false);
+  } catch (RuntimeException $e) {
+    flash("<div class='alert alert-warning'>".e($e->getMessage())."</div>");
+    redirect('articulos.nuevo');
+  }
 
   if ($articulo === '') {
     flash("<div class='alert alert-danger'>El campo artículo es obligatorio.</div>");
@@ -253,12 +286,12 @@ case 'guardar':
   $pdo = db();
   try {
     $pdo->beginTransaction();
-    q("INSERT INTO articulos (articulo, marca, categoria, existencias, foto, id_proveedor, updated_at, eliminado)
-       VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP(), 0)",
-      [$articulo,$marca,$categoria,$existencias,$foto,$id_proveedor]);
+    q("INSERT INTO articulos (articulo, marca, categoria, existencias, foto, id_proveedor, id_almacen, updated_at, eliminado)
+       VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP(), 0)",
+      [$articulo,$marca,$categoria,$existencias,$foto,$id_proveedor,$id_almacen]);
     $id = (int)$pdo->lastInsertId();
     if ($existencias > 0) {
-      articulos_log_movimiento($pdo, $id, 'entrada', $existencias, 'alta_inicial', null, null, 'Alta de artículo');
+      articulos_log_movimiento($pdo, $id, 'entrada', $existencias, 'alta_inicial', null, $almacen_nombre, 'Alta de artículo', null, $id_almacen);
     }
     articulos_log('articulos', ['accion'=>'alta','id'=>$id,'articulo'=>$articulo]);
     $pdo->commit();
@@ -282,6 +315,7 @@ case 'editar':
   foreach ($proveedores as $prov) {
     $opts[$prov['id_proveedor']] = $prov['nombre'];
   }
+  $almacen_opts = almacenes_options((int)($art['id_almacen'] ?? 0), 'Sin almacen');
   ob_start(); ?>
   <div class="card shadow-sm">
     <div class="card-body">
@@ -292,6 +326,7 @@ case 'editar':
         <?= form_input('marca','Marca',$art['marca']) ?>
         <?= form_select('categoria','Categoría',['general'=>'General','urna'=>'Urna','insumo'=>'Insumo','decoracion'=>'Decoración'],$art['categoria'],['class'=>'form-select']) ?>
         <?= form_select('id_proveedor','Proveedor',$opts,(string)($art['id_proveedor'] ?? ''),['class'=>'form-select']) ?>
+        <?= form_select('id_almacen','Almacén',$almacen_opts,(string)($art['id_almacen'] ?? ''),['class'=>'form-select']) ?>
         <?= form_input('existencias','Existencias',$art['existencias'],['type'=>'number','min'=>0,'required'=>true]) ?>
         <?= form_input('foto','Foto (ruta opcional)',$art['foto'] ?? '') ?>
         <div class="d-flex gap-2 mt-3">
@@ -319,14 +354,20 @@ case 'actualizar':
   $existencias = max(0, (int)($_POST['existencias'] ?? 0));
   $foto = trim($_POST['foto'] ?? '') ?: null;
   $id_proveedor = (int)($_POST['id_proveedor'] ?? 0) ?: null;
+  try {
+    [$id_almacen, $almacen_nombre] = almacen_resolver_post('id_almacen', false);
+  } catch (RuntimeException $e) {
+    flash("<div class='alert alert-warning'>".e($e->getMessage())."</div>");
+    redirect('articulos.editar&id='.$id);
+  }
   if ($articulo === '') {
     flash("<div class='alert alert-danger'>El campo artículo es obligatorio.</div>");
     redirect('articulos.editar&id='.$id);
   }
   q("UPDATE articulos
-     SET articulo=?, marca=?, categoria=?, existencias=?, foto=?, id_proveedor=?, updated_at=CURRENT_TIMESTAMP()
+     SET articulo=?, marca=?, categoria=?, existencias=?, foto=?, id_proveedor=?, id_almacen=?, updated_at=CURRENT_TIMESTAMP()
      WHERE id=?",
-    [$articulo,$marca,$categoria,$existencias,$foto,$id_proveedor,$id]);
+    [$articulo,$marca,$categoria,$existencias,$foto,$id_proveedor,$id_almacen,$id]);
   articulos_log('articulos',['accion'=>'actualizar','id'=>$id]);
   flash("<div class='alert alert-success'>Artículo actualizado.</div>");
   redirect('articulos.listar');
@@ -367,9 +408,16 @@ case 'ajustar':
       $pdo->beginTransaction();
       if ($tipo === 'entrada') {
         $referencia = trim($_POST['referencia'] ?? '');
-        $destino = trim($_POST['destino'] ?? 'almacen');
+        [$idAlmacenDestino, $destinoAlmacen] = almacen_resolver_post('id_almacen_destino', false);
+        if ($idAlmacenDestino === null && !empty($art['id_almacen'])) {
+          $idAlmacenDestino = (int)$art['id_almacen'];
+          $destinoAlmacen = almacen_nombre($idAlmacenDestino);
+        }
         articulos_actualizar_stock($pdo, $id, $cantidad);
-        articulos_log_movimiento($pdo, $id, 'entrada', $cantidad, $referencia ?: null, null, $destino ?: null, $notas ?: null);
+        if ($idAlmacenDestino !== null) {
+          q("UPDATE articulos SET id_almacen=?, updated_at=CURRENT_TIMESTAMP() WHERE id=?", [$idAlmacenDestino, $id]);
+        }
+        articulos_log_movimiento($pdo, $id, 'entrada', $cantidad, $referencia ?: null, null, $destinoAlmacen ?: null, $notas ?: null, null, $idAlmacenDestino);
         articulos_log('articulos_movimientos',['accion'=>'entrada','id_articulo'=>$id,'cantidad'=>$cantidad]);
         $pdo->commit();
         flash("<div class='alert alert-success'>Entrada registrada.</div>");
@@ -382,25 +430,31 @@ case 'ajustar':
           throw new RuntimeException('No hay existencias suficientes.');
         }
         $responsable = trim($_POST['responsable'] ?? '');
+        [$idAlmacenOrigen, $origenAlmacen] = almacen_resolver_post('id_almacen_origen', false);
+        if ($idAlmacenOrigen === null && !empty($art['id_almacen'])) {
+          $idAlmacenOrigen = (int)$art['id_almacen'];
+          $origenAlmacen = almacen_nombre($idAlmacenOrigen);
+        }
         q("INSERT INTO articulos_salida_servicio (id_servicio,id_articulo,cantidad,responsable) VALUES (?,?,?,?)",
           [$id_servicio,$id,$cantidad,$responsable ?: (current_user()['usuario'] ?? 'sistema')]);
         articulos_actualizar_stock($pdo, $id, -$cantidad);
-        articulos_log_movimiento($pdo, $id, 'salida', $cantidad, 'servicio:'.$id_servicio, null, null, $notas ?: null);
+        articulos_log_movimiento($pdo, $id, 'salida', $cantidad, 'servicio:'.$id_servicio, $origenAlmacen ?: null, null, $notas ?: null, $idAlmacenOrigen, null);
         articulos_log('articulos_movimientos',['accion'=>'salida','id_articulo'=>$id,'cantidad'=>$cantidad,'servicio'=>$id_servicio]);
         $pdo->commit();
         flash("<div class='alert alert-success'>Salida a servicio registrada.</div>");
       } else { // traspaso
-        $origen = trim($_POST['origen'] ?? '');
-        $destino = trim($_POST['destino'] ?? '');
-        if ($origen === '' || $destino === '') {
-          throw new RuntimeException('Debes indicar origen y destino.');
-        }
+        [$idAlmacenOrigen, $origen] = almacen_resolver_post('id_almacen_origen', true);
+        [$idAlmacenDestino, $destino] = almacen_resolver_post('id_almacen_destino', true);
         $responsable = trim($_POST['responsable'] ?? (current_user()['usuario'] ?? 'sistema'));
-        q("INSERT INTO articulos_traspasos (origen,destino,responsable) VALUES (?,?,?)", [$origen,$destino,$responsable]);
+        q(
+          "INSERT INTO articulos_traspasos (origen,destino,id_almacen_origen,id_almacen_destino,responsable) VALUES (?,?,?,?,?)",
+          [$origen,$destino,$idAlmacenOrigen,$idAlmacenDestino,$responsable]
+        );
         $traspasoId = (int)$pdo->lastInsertId();
         q("INSERT INTO articulos_traspaso_det (id_traspaso,id_articulo,cantidad) VALUES (?,?,?)", [$traspasoId,$id,$cantidad]);
-        articulos_log_movimiento($pdo, $id, 'traspaso_out', $cantidad, 'traspaso:'.$traspasoId, $origen, $destino, $notas ?: null);
-        articulos_log_movimiento($pdo, $id, 'traspaso_in', $cantidad, 'traspaso:'.$traspasoId, $origen, $destino, $notas ?: null);
+        q("UPDATE articulos SET id_almacen=?, updated_at=CURRENT_TIMESTAMP() WHERE id=?", [$idAlmacenDestino, $id]);
+        articulos_log_movimiento($pdo, $id, 'traspaso_out', $cantidad, 'traspaso:'.$traspasoId, $origen, $destino, $notas ?: null, $idAlmacenOrigen, $idAlmacenDestino);
+        articulos_log_movimiento($pdo, $id, 'traspaso_in', $cantidad, 'traspaso:'.$traspasoId, $origen, $destino, $notas ?: null, $idAlmacenOrigen, $idAlmacenDestino);
         articulos_log('articulos_movimientos',['accion'=>'traspaso','id_articulo'=>$id,'id_traspaso'=>$traspasoId]);
         $pdo->commit();
         flash("<div class='alert alert-success'>Traspaso registrado.</div>");
@@ -412,6 +466,8 @@ case 'ajustar':
     redirect('articulos.listar');
   }
 
+  $almacen_opts = almacenes_options((int)($art['id_almacen'] ?? 0), 'Selecciona almacen');
+  $almacenActual = (string)($art['id_almacen'] ?? '');
   ob_start(); ?>
   <div class="card shadow-sm">
     <div class="card-body">
@@ -424,13 +480,14 @@ case 'ajustar':
         <?= form_input('cantidad','Cantidad',1,['type'=>'number','min'=>1,'required'=>true]) ?>
         <?php if ($tipo==='entrada'): ?>
           <?= form_input('referencia','Referencia (folio, factura)','') ?>
-          <?= form_input('destino','Destino / Almacén','principal') ?>
+          <?= form_select('id_almacen_destino','Destino / Almacén',$almacen_opts,$almacenActual,['class'=>'form-select']) ?>
         <?php elseif ($tipo==='salida'): ?>
           <?= form_input('id_servicio','Servicio destino','',['type'=>'number','min'=>1,'required'=>true,'help'=>'Folio de servicio al que se asigna.']) ?>
+          <?= form_select('id_almacen_origen','Almacén origen',$almacen_opts,$almacenActual,['class'=>'form-select']) ?>
           <?= form_input('responsable','Responsable','', ['placeholder'=>'Nombre de quien retira']) ?>
         <?php else: ?>
-          <?= form_input('origen','Origen','', ['required'=>true]) ?>
-          <?= form_input('destino','Destino','', ['required'=>true]) ?>
+          <?= form_select('id_almacen_origen','Almacén origen',$almacen_opts,$almacenActual,['class'=>'form-select','required'=>true]) ?>
+          <?= form_select('id_almacen_destino','Almacén destino',almacenes_options(null, 'Selecciona almacen'),'',['class'=>'form-select','required'=>true]) ?>
           <?= form_input('responsable','Responsable', current_user()['usuario'] ?? '', ['required'=>true]) ?>
         <?php endif; ?>
         <?= form_input('notas','Notas','', ['placeholder'=>'Opcional']) ?>

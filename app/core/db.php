@@ -212,6 +212,7 @@ function db_schema_tracked_tables(): array {
     'servicios', 'fallecido', 'servicio_fallecido', 'servicio_asignacion', 'servicio_seguimiento',
     'servicio_cierre', 'servicio_pagos', 'servicio_bitacora', 'servicio_articulos', 'kardex_articulos',
     'servicio_caja', 'renta_cajas', 'servicio_equipo',
+    'almacenes',
     'articulos', 'articulos_movimientos', 'articulos_salida_servicio', 'articulos_traspasos', 'articulos_traspaso_det',
     'cajas', 'cajas_movimientos', 'equipos', 'equipos_movimientos', 'vehiculos', 'salas',
     'proveedores',

@@ -26,6 +26,7 @@ case 'schema_repair':
 
     $started = microtime(true);
     try {
+      auth_bootstrap(true);
       inventario_schema_bootstrap(true);
       iv2_bootstrap(true);
       so_bootstrap(true);
