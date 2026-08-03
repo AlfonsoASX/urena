@@ -9,6 +9,7 @@ require __DIR__.'/performance_schema.php';
 require __DIR__.'/helpers.php';
 require __DIR__.'/ui.php';
 require __DIR__.'/auth.php';
+require __DIR__.'/futuros_promociones.php';
 require __DIR__.'/api.php';
 require __DIR__.'/inventario_v2.php';
 require __DIR__.'/servicios_operativos.php';
@@ -19,9 +20,11 @@ so_ensure_runtime_schema_compat();
 // Siempre registrar el repair de auth para que db_prepare_execute pueda
 // auto-corregir columnas faltantes (ej. puesto) aunque el modo sea ondemand.
 db_register_schema_repair('auth', fn() => auth_bootstrap(true));
+db_register_schema_repair('futuros_promociones', fn() => futuros_promociones_ensure_schema(true));
 
 if (db_schema_bootstrap_on_request()) {
   auth_bootstrap(true);
+  futuros_promociones_ensure_schema(true);
   inventario_schema_bootstrap(true);
   iv2_bootstrap(true);
   so_bootstrap(true);

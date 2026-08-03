@@ -33,10 +33,33 @@ function usuarios_asignar_roles(int $usuario_id, array $roles_ids): void {
 
 function usuarios_asignar_permisos(int $rol_id, array $perm_ids): void {
   if (!auth_permissions_enabled()) return;
-  q("DELETE FROM roles_permisos WHERE rol_id=?", [$rol_id]);
-  foreach ($perm_ids as $perm_id) {
-    if (!$perm_id) continue;
-    q("INSERT INTO roles_permisos (rol_id, permiso_id) VALUES (?, ?)", [$rol_id, $perm_id]);
+  if ($rol_id <= 0 || !qone("SELECT id FROM roles WHERE id=?", [$rol_id])) {
+    throw new RuntimeException('Rol no encontrado.');
+  }
+
+  $perm_ids = array_values(array_unique(array_filter(array_map('intval', $perm_ids), fn($id) => $id > 0)));
+  $validos = [];
+  if (!empty($perm_ids)) {
+    $placeholders = implode(',', array_fill(0, count($perm_ids), '?'));
+    foreach (qall("SELECT id FROM permisos WHERE id IN ({$placeholders})", $perm_ids) as $row) {
+      $validos[] = (int)$row['id'];
+    }
+  }
+
+  $pdo = db();
+  try {
+    $pdo->beginTransaction();
+    $pdo->prepare("DELETE FROM roles_permisos WHERE rol_id=?")->execute([$rol_id]);
+    if (!empty($validos)) {
+      $stmt = $pdo->prepare("INSERT IGNORE INTO roles_permisos (rol_id, permiso_id) VALUES (?, ?)");
+      foreach ($validos as $perm_id) {
+        $stmt->execute([$rol_id, $perm_id]);
+      }
+    }
+    $pdo->commit();
+  } catch (Throwable $e) {
+    if ($pdo->inTransaction()) $pdo->rollBack();
+    throw $e;
   }
 }
 
@@ -514,18 +537,23 @@ switch ($action) {
     $roles   = usuarios_roles_disponibles();
     $rolActual = $rol_id > 0 ? qone("SELECT * FROM roles WHERE id=?", [$rol_id]) : null;
 
-    // IDs asignados al rol seleccionado
-    $asignados = [];
-    if ($rol_id > 0) {
-      $asignados = array_map(
-        fn($r) => (int)$r['permiso_id'],
-        qall("SELECT permiso_id FROM roles_permisos WHERE rol_id=?", [$rol_id])
-      );
-    }
-
-    // Agrupar permisos de BD por módulo, enriquecidos con la descripción canónica
+    // Agrupar permisos de BD por módulo, enriquecidos con la descripción canónica.
     $permisosMap  = usuarios_permisos_map();   // clave → id
     $catalogoGrps = auth_permisos_por_modulo(); // grupo → [clave => desc]
+
+    // Claves asignadas al rol seleccionado; son más estables que los IDs entre ambientes.
+    $asignadosClaves = [];
+    if ($rol_id > 0) {
+      foreach (qall("
+        SELECT p.clave
+        FROM roles_permisos rp
+        JOIN permisos p ON p.id = rp.permiso_id
+        WHERE rp.rol_id = ?
+      ", [$rol_id]) as $row) {
+        $clave = (string)($row['clave'] ?? '');
+        if ($clave !== '') $asignadosClaves[$clave] = true;
+      }
+    }
 
     ob_start(); ?>
     <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-2 mb-3">
@@ -594,7 +622,7 @@ switch ($action) {
                       <input class="form-check-input perm-chk" type="checkbox"
                              name="permisos[]" value="<?= (int)$pid ?>"
                              id="p<?= (int)$pid ?>"
-                             <?= in_array((int)$pid, $asignados, true) ? 'checked' : '' ?>>
+                             <?= !empty($asignadosClaves[$clave]) ? 'checked' : '' ?>>
                       <label class="form-check-label small" for="p<?= (int)$pid ?>">
                         <?= e($desc) ?>
                         <code class="text-muted ms-1" style="font-size:.7rem"><?= e($clave) ?></code>
@@ -689,8 +717,12 @@ switch ($action) {
     }
     $rol_id   = (int)($_POST['rol_id'] ?? 0);
     $perm_ids = array_map('intval', $_POST['permisos'] ?? []);
-    usuarios_asignar_permisos($rol_id, $perm_ids);
-    flash("<div class='alert alert-success'>Permisos actualizados.</div>");
+    try {
+      usuarios_asignar_permisos($rol_id, $perm_ids);
+      flash("<div class='alert alert-success'>Permisos actualizados.</div>");
+    } catch (Throwable $e) {
+      flash("<div class='alert alert-danger'>No se pudieron actualizar los permisos: ".e($e->getMessage())."</div>");
+    }
     redirect('usuarios.permisos&rol_id='.$rol_id);
     break;
 }

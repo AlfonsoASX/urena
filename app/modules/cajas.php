@@ -13,7 +13,11 @@ almacenes_ensure_schema();
 
 $action = $action ?? 'listar';
 $roles = ['administradora','auxiliar'];
-require_role($roles);
+$cajasViewPermissions = ['cajas.ver','cajas.admin'];
+$cajasAdminPermission = 'cajas.admin';
+require_permission_or_legacy_role($cajasViewPermissions, $roles);
+$canAdminCajas = user_has_permission_or_legacy_role($cajasAdminPermission, ['administradora']);
+$canManageCajas = user_has_permission_or_legacy_role($cajasAdminPermission, $roles);
 
 function cajas_proveedores(): array {
   try {
@@ -303,9 +307,13 @@ function caja_registrar_mov(PDO $pdo, string $codigo, string $tipo, ?int $id_ser
   $stmt->execute([$codigo, $tipo, $id_servicio, $notas]);
 }
 
-$adminOnly = ['nuevo', 'guardar', 'editar', 'actualizar', 'baja'];
-if (in_array($action, $adminOnly, true)) {
-  require_role(['administradora']);
+$catalogAdminOnly = ['nuevo', 'guardar', 'editar', 'actualizar', 'baja'];
+if (in_array($action, $catalogAdminOnly, true)) {
+  require_permission_or_legacy_role($cajasAdminPermission, ['administradora']);
+}
+$stateAdminOnly = ['reciclar', 'estado'];
+if (in_array($action, $stateAdminOnly, true)) {
+  require_permission_or_legacy_role($cajasAdminPermission, $roles);
 }
 
 switch ($action) {
@@ -401,7 +409,7 @@ case 'listar':
       <h1 class="h4 m-0">Ataúdes</h1>
       <div class="text-muted small">Inventario con estado operativo, condición de uso y kardex completo.</div>
     </div>
-    <?php if (user_has_role('administradora')): ?>
+    <?php if ($canAdminCajas): ?>
       <a href="?r=cajas.nuevo" class="btn btn-success btn-sm">Nuevo ataúd</a>
     <?php endif; ?>
   </div>
@@ -426,35 +434,39 @@ case 'listar':
     </div>
   </form>
 
-  <div class="card shadow-sm mb-3">
-    <div class="card-body py-3">
-      <form id="bulkStateForm" method="post" action="?r=cajas.estado" class="row g-2 align-items-end">
-        <?= csrf_field() ?>
-        <input type="hidden" name="return_to" value="<?= e($returnTarget) ?>">
-        <div class="col-md-4">
-          <?= form_select('estado_destino', 'Cambio masivo', [
-            '' => 'Selecciona una acción',
-            'nuevo' => 'Marcar como nuevo',
-            'reciclado' => 'Marcar como usado / reciclado',
-            'fuera_uso' => 'Mandar a fuera de uso',
-          ], '', ['class' => 'form-select', 'required' => true]) ?>
-        </div>
-        <div class="col-md-4">
-          <div class="small text-muted">Seleccionados: <strong id="selectedCount">0</strong></div>
-          <div class="small text-muted">Las piezas en servicio quedan bloqueadas para evitar desalineación con servicios activos.</div>
-        </div>
-        <div class="col-md-4 d-grid d-md-flex justify-content-md-end">
-          <button class="btn btn-primary" id="bulkSubmit" disabled>Aplicar a seleccionados</button>
-        </div>
-      </form>
+  <?php if ($canManageCajas): ?>
+    <div class="card shadow-sm mb-3">
+      <div class="card-body py-3">
+        <form id="bulkStateForm" method="post" action="?r=cajas.estado" class="row g-2 align-items-end">
+          <?= csrf_field() ?>
+          <input type="hidden" name="return_to" value="<?= e($returnTarget) ?>">
+          <div class="col-md-4">
+            <?= form_select('estado_destino', 'Cambio masivo', [
+              '' => 'Selecciona una acción',
+              'nuevo' => 'Marcar como nuevo',
+              'reciclado' => 'Marcar como usado / reciclado',
+              'fuera_uso' => 'Mandar a fuera de uso',
+            ], '', ['class' => 'form-select', 'required' => true]) ?>
+          </div>
+          <div class="col-md-4">
+            <div class="small text-muted">Seleccionados: <strong id="selectedCount">0</strong></div>
+            <div class="small text-muted">Las piezas en servicio quedan bloqueadas para evitar desalineación con servicios activos.</div>
+          </div>
+          <div class="col-md-4 d-grid d-md-flex justify-content-md-end">
+            <button class="btn btn-primary" id="bulkSubmit" disabled>Aplicar a seleccionados</button>
+          </div>
+        </form>
+      </div>
     </div>
-  </div>
+  <?php endif; ?>
 
   <div class="table-responsive">
     <table class="table table-striped table-hover table-sm align-middle">
       <thead>
         <tr>
-          <th style="width:36px"><input type="checkbox" class="form-check-input" id="bulkCheckAll"></th>
+          <?php if ($canManageCajas): ?>
+            <th style="width:36px"><input type="checkbox" class="form-check-input" id="bulkCheckAll"></th>
+          <?php endif; ?>
           <th>Código</th>
           <th>Modelo</th>
           <th>Estado</th>
@@ -476,16 +488,18 @@ case 'listar':
           $condicionClass = $condicionLabel === 'Usado' ? 'warning text-dark' : 'success';
         ?>
         <tr>
-          <td>
-            <input
-              class="form-check-input js-caja-check"
-              type="checkbox"
-              name="codigos[]"
-              value="<?= e($codigo) ?>"
-              form="bulkStateForm"
-              <?= $activo ? 'disabled' : '' ?>
-            >
-          </td>
+          <?php if ($canManageCajas): ?>
+            <td>
+              <input
+                class="form-check-input js-caja-check"
+                type="checkbox"
+                name="codigos[]"
+                value="<?= e($codigo) ?>"
+                form="bulkStateForm"
+                <?= $activo ? 'disabled' : '' ?>
+              >
+            </td>
+          <?php endif; ?>
           <td><code><?= e($codigo) ?></code></td>
           <td><?= e($r['modelo']) ?></td>
           <td><span class="badge bg-<?= caja_estado_classes((string)$r['estado']) ?>"><?= e(caja_estado_label((string)$r['estado'])) ?></span></td>
@@ -500,11 +514,11 @@ case 'listar':
           <td><?= e($r['actualizado'] ?: '—') ?></td>
           <td class="d-flex flex-wrap gap-2">
             <a class="btn btn-outline-secondary btn-sm" href="?r=cajas.historial&codigo=<?= urlencode($codigo) ?>">Kardex</a>
-            <?php if (user_has_role('administradora')): ?>
+            <?php if ($canAdminCajas): ?>
               <a class="btn btn-outline-primary btn-sm" href="?r=cajas.editar&codigo=<?= urlencode($codigo) ?>">Editar</a>
               <a class="btn btn-outline-danger btn-sm" href="?r=cajas.baja&codigo=<?= urlencode($codigo) ?>" onclick="return confirm('¿Dar de baja lógica este ataúd?');">Baja</a>
             <?php endif; ?>
-            <?php if (!$activo && caja_condicion($r) !== 'reciclado'): ?>
+            <?php if ($canManageCajas && !$activo && caja_condicion($r) !== 'reciclado'): ?>
               <form method="post" action="?r=cajas.estado" class="d-inline-flex">
                 <?= csrf_field() ?>
                 <input type="hidden" name="return_to" value="<?= e($returnTarget) ?>">
@@ -517,7 +531,7 @@ case 'listar':
         </tr>
         <?php endforeach; ?>
         <?php if (empty($rows)): ?>
-        <tr><td colspan="11" class="text-center text-muted">Sin registros</td></tr>
+        <tr><td colspan="<?= $canManageCajas ? 11 : 10 ?>" class="text-center text-muted">Sin registros</td></tr>
         <?php endif; ?>
       </tbody>
     </table>

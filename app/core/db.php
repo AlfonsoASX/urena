@@ -217,7 +217,8 @@ function db_schema_tracked_tables(): array {
     'cajas', 'cajas_movimientos', 'equipos', 'equipos_movimientos', 'vehiculos', 'salas',
     'proveedores',
     'futuro_contratos', 'futuro_abonos', 'futuro_comision_semanal', 'futuro_gestion', 'futuro_personal',
-    'futuro_contrato_cobrador', 'futuro_contrato_vendedor', 'futuro_logs',
+    'futuro_contrato_cobrador', 'futuro_contrato_vendedor', 'futuro_cont_cat_com',
+    'futuro_mostrar_catalogo_promociones', 'futuro_promocion_reglas', 'futuro_logs',
     'titular_contrato', 'titular_dom', 'titulares', 'domicilios',
     'vw_titular_contrato', 'vw_cajas_estado',
   ];

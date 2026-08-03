@@ -1,4 +1,6 @@
 <?php
+require_once __DIR__.'/../core/futuros_promociones.php';
+
 if (!user_has_role(['admin', 'vendedor', 'supervisor'])) redirect('auth.login');
 
     function __nombre_mes(int $mes): string {
@@ -18,10 +20,12 @@ function __personal_activo() {
 }
 
 function __promociones_activas() {
-  return qall("SELECT id_mos_cat_com, codigo concepto 
-               FROM futuro_mostrar_catalogo_promociones 
-               WHERE estatus = 1 
-               ORDER BY concepto ASC");
+  $rows = futuros_promociones_catalogo(true);
+  foreach ($rows as &$row) {
+    $row['concepto'] = futuros_promociones_label($row['codigo'] ?? '', $row['concepto'] ?? '');
+  }
+  unset($row);
+  return $rows;
 }
 
 function __vendedor_actual_id(int $id_contrato): int {
@@ -98,7 +102,25 @@ switch ($action) {
       SELECT c.id_contrato,
              t.nombre, t.apellido_p, t.apellido_m,
              d.calle, d.num_ext, d.num_int, d.colonia, d.municipio,
-             c.costo_final, c.estatus
+             c.costo_final, c.estatus,
+             (
+               SELECT CASE
+                        WHEN p.id_mos_cat_com IS NULL THEN NULL
+                        WHEN COALESCE(p.codigo,'') <> '' AND COALESCE(p.concepto,'') <> '' AND p.codigo <> p.concepto
+                          THEN CONCAT(p.codigo, ' - ', p.concepto)
+                        ELSE COALESCE(NULLIF(p.codigo,''), p.concepto)
+                      END
+               FROM futuro_cont_cat_com fcc
+               JOIN futuro_mostrar_catalogo_promociones p ON p.id_mos_cat_com = fcc.id_mos_cat_com
+               WHERE fcc.id_contrato = c.id_contrato
+               ORDER BY fcc.id_cont_cat_com DESC
+               LIMIT 1
+             ) AS promocion,
+             (
+               SELECT COUNT(*)
+               FROM futuro_abonos a
+               WHERE a.id_contrato = c.id_contrato
+             ) AS pagos_hechos
       FROM futuro_contratos c
       LEFT JOIN titular_contrato tc ON tc.id_contrato = c.id_contrato
       LEFT JOIN titulares t ON t.id_titular = tc.id_titular
@@ -215,7 +237,25 @@ case 'listar':
       SELECT c.id_contrato,
              t.nombre, t.apellido_p, t.apellido_m,
              d.calle, d.num_ext, d.num_int, d.colonia, d.municipio,
-             c.costo_final, c.estatus
+             c.costo_final, c.estatus,
+             (
+               SELECT CASE
+                        WHEN p.id_mos_cat_com IS NULL THEN NULL
+                        WHEN COALESCE(p.codigo,'') <> '' AND COALESCE(p.concepto,'') <> '' AND p.codigo <> p.concepto
+                          THEN CONCAT(p.codigo, ' - ', p.concepto)
+                        ELSE COALESCE(NULLIF(p.codigo,''), p.concepto)
+                      END
+               FROM futuro_cont_cat_com fcc
+               JOIN futuro_mostrar_catalogo_promociones p ON p.id_mos_cat_com = fcc.id_mos_cat_com
+               WHERE fcc.id_contrato = c.id_contrato
+               ORDER BY fcc.id_cont_cat_com DESC
+               LIMIT 1
+             ) AS promocion,
+             (
+               SELECT COUNT(*)
+               FROM futuro_abonos a
+               WHERE a.id_contrato = c.id_contrato
+             ) AS pagos_hechos
       FROM futuro_contratos c
       LEFT JOIN titular_contrato tc ON tc.id_contrato = c.id_contrato
       LEFT JOIN titulares t ON t.id_titular = tc.id_titular
@@ -259,6 +299,8 @@ case 'listar':
                 <th>Titular</th>
                 <th>Dirección</th>
                 <th>Costo final</th>
+                <th>Promoción</th>
+                <th>Pagos hechos</th>
                 <th>Estatus</th>
                 <th class="text-end">Acciones</th>
               </tr>
@@ -270,6 +312,8 @@ case 'listar':
                 <td><?= e(trim(($r['nombre'] ?? '').' '.($r['apellido_p'] ?? '').' '.($r['apellido_m'] ?? ''))) ?></td>
                 <td><?= e(trim(($r['calle'] ?? '')." #".($r['num_ext'] ?? '').(($r['num_int'] ?? '') ? " Int. ".$r['num_int'] : "").", ".($r['colonia'] ?? '').", ".($r['municipio'] ?? ''))) ?></td>
                 <td>$<?= number_format((float)($r['costo_final'] ?? 0), 2) ?></td>
+                <td><?= e($r['promocion'] ?: '—') ?></td>
+                <td><span class="badge text-bg-light"><?= (int)($r['pagos_hechos'] ?? 0) ?></span></td>
                 <td>
                     <?php
                     $bg = match($r['estatus'] ?? '') {
@@ -340,7 +384,7 @@ case 'listar':
             "order": [[ 0, "desc" ]], // Ordenar por ID (columna 0) descendente
             "pageLength": 25,         // Mostrar 25 registros por defecto
             "columnDefs": [
-                { "orderable": false, "targets": 5 } // No permitir ordenar por la columna de acciones
+                { "orderable": false, "targets": 7 } // No permitir ordenar por la columna de acciones
             ]
         });
     });
@@ -357,10 +401,8 @@ case 'listar':
         'INACTIVO' => 'BAJA / INACTIVO'
     ];
     
-    $tipo_contrato_opts = [
-        'SERVICIO COMPLETO' => 'SERVICIO COMPLETO',
-        'CREMACIÓN' => 'CREMACIÓN'
-    ];
+    $paquetes = futuros_promociones_paquetes();
+    $tipo_contrato_opts = array_combine($paquetes, $paquetes) ?: [];
     
     $tipo_pago_opts = [
         'PARCIALIDADES' => 'PARCIALIDADES',
@@ -571,7 +613,7 @@ case 'listar':
         $promociones_opts[$p['id_mos_cat_com']] = $p['concepto'];
     }
     
-    $promo_actual = qone("SELECT id_mos_cat_com FROM futuro_cont_cat_com WHERE id_contrato = ?", [$idc]);
+    $promo_actual = qone("SELECT id_mos_cat_com FROM futuro_cont_cat_com WHERE id_contrato = ? ORDER BY id_cont_cat_com DESC LIMIT 1", [$idc]);
     $id_promocion_sel = (int)($promo_actual['id_mos_cat_com'] ?? 0);
 
     $estatus_opts = [
@@ -581,10 +623,8 @@ case 'listar':
         'INACTIVO' => 'BAJA / INACTIVO'
     ];
     
-    $tipo_contrato_opts = [
-        'SERVICIO COMPLETO' => 'SERVICIO COMPLETO',
-        'CREMACIÓN' => 'CREMACIÓN'
-    ];
+    $paquetes = futuros_promociones_paquetes();
+    $tipo_contrato_opts = array_combine($paquetes, $paquetes) ?: [];
     
     $tipo_pago_opts = [
         'PARCIALIDADES' => 'PARCIALIDADES',

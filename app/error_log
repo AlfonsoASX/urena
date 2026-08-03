@@ -1,0 +1,1 @@
+[26-Jun-2026 19:12:47 UTC] [2026-06-26 19:12:47] Call to undefined function require_permission_or_legacy_role() | {"route":"articulos.listar","method":"GET"}

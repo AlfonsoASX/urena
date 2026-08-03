@@ -44,19 +44,45 @@
 
 
 <ul class="navbar-nav me-auto">
-  <?php if (user_has_role(['administradora','auxiliar','vendedor','coordinador','caja'])): ?>
+  <?php
+    $navServiciosRoles = ['administradora','auxiliar','vendedor','coordinador','caja'];
+    $navInventarioRoles = ['administradora','auxiliar'];
+    $navCanServicios = user_has_permission_or_legacy_role(['servicios.ver','servicios.crear','servicios.editar','servicios.cerrar','servicios.borrar'], $navServiciosRoles);
+    $navCanServicioPagos = user_has_permission_or_legacy_role('servicio_pagos.ver', $navServiciosRoles);
+    $navCanArticulos = user_has_permission_or_legacy_role(['articulos.ver','articulos.admin'], $navInventarioRoles);
+    $navCanCajas = user_has_permission_or_legacy_role(['cajas.ver','cajas.admin'], $navInventarioRoles);
+    $navCanEquipos = user_has_permission_or_legacy_role(['equipos.ver','equipos.admin'], $navInventarioRoles);
+    $navCanAlmacenes = user_has_permission_or_legacy_role(['almacenes.ver','almacenes.admin'], $navInventarioRoles);
+    $navHasServicios = $navCanServicios || $navCanServicioPagos;
+    $navHasInventario = $navCanArticulos || $navCanCajas || $navCanEquipos || $navCanAlmacenes;
+  ?>
+  <?php if ($navHasServicios || $navHasInventario): ?>
     <li class="nav-item dropdown">
       <a class="nav-link dropdown-toggle" href="#" id="serviciosDrop" role="button" data-bs-toggle="dropdown">
         Servicios Funerarios
       </a>
       <ul class="dropdown-menu" aria-labelledby="serviciosDrop">
-        <li><a class="dropdown-item" href="?r=servicios.listar">Servicios</a></li>
-        <li><a class="dropdown-item" href="?r=servicio_pagos.listar">Pagos de servicios</a></li>
-        <li><hr class="dropdown-divider"></li>
-        <li><a class="dropdown-item" href="?r=articulos.listar">Articulos</a></li>
-        <li><a class="dropdown-item" href="?r=cajas.listar">Ataudes</a></li>
-        <li><a class="dropdown-item" href="?r=equipos.listar">Equipos</a></li>
-        <li><a class="dropdown-item" href="?r=almacenes.listar">Almacenes</a></li>
+        <?php if ($navCanServicios): ?>
+          <li><a class="dropdown-item" href="?r=servicios.listar">Servicios</a></li>
+        <?php endif; ?>
+        <?php if ($navCanServicioPagos): ?>
+          <li><a class="dropdown-item" href="?r=servicio_pagos.listar">Pagos de servicios</a></li>
+        <?php endif; ?>
+        <?php if ($navHasServicios && $navHasInventario): ?>
+          <li><hr class="dropdown-divider"></li>
+        <?php endif; ?>
+        <?php if ($navCanArticulos): ?>
+          <li><a class="dropdown-item" href="?r=articulos.listar">Articulos</a></li>
+        <?php endif; ?>
+        <?php if ($navCanCajas): ?>
+          <li><a class="dropdown-item" href="?r=cajas.listar">Ataudes</a></li>
+        <?php endif; ?>
+        <?php if ($navCanEquipos): ?>
+          <li><a class="dropdown-item" href="?r=equipos.listar">Equipos</a></li>
+        <?php endif; ?>
+        <?php if ($navCanAlmacenes): ?>
+          <li><a class="dropdown-item" href="?r=almacenes.listar">Almacenes</a></li>
+        <?php endif; ?>
       </ul>
     </li>
   <?php endif; ?>
@@ -97,6 +123,7 @@
       </a>
       <ul class="dropdown-menu" aria-labelledby="pagosDrop">
         <li><a class="dropdown-item" href="?r=contratos.listar">Lista</a></li>
+        <li><a class="dropdown-item" href="?r=promociones.listar">Promociones</a></li>
         <li><a class="dropdown-item" href="?r=pagos.contratos">Pagos</a></li>
         <li><a class="dropdown-item" href="?r=rutas.contratos">Armado de rutas</a></li>
         <li><a class="dropdown-item" href="?r=cobrador.contratos">Vista cobrador</a></li>
@@ -114,11 +141,10 @@
       </a>
       <ul class="dropdown-menu" aria-labelledby="pagosDrop">
         <li><a class="dropdown-item" href="?r=pagos.contratos">Contratos</a></li>
-        <li><a class="dropdown-item" href="?r=pagos.nuevo_abono">Nuevo abono</a></li>
-        <li><a class="dropdown-item" href="?r=pagos.corte">Corte</a></li>
-        <li><a class="dropdown-item" href="?r=pagos.comisiones">Comisiones</a></li>
-        <li><a class="dropdown-item" href="?r=pagos.reporte_comisiones">Corte Vendedor</a></li>
-        <li><a class="dropdown-item" href="?r=pagos.reporte_base">Verificación</a></li>
+        <li><a class="dropdown-item" href="?r=pagos.reporte_comisiones">Comisiones vendedores</a></li>
+        <li><a class="dropdown-item" href="?r=pagos.reporte_cobradores">Reporte cobradores</a></li>
+<!--        <li><a class="dropdown-item" href="?r=pagos.comisiones">Comisiones manuales</a></li> -->
+        <li><a class="dropdown-item" href="?r=pagos.reporte_base">Reporte de pagos/promocion</a></li>
 
         
       </ul>

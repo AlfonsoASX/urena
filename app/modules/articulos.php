@@ -13,7 +13,11 @@ $action = $action ?? 'listar';
 
 // Permisos: administradora controla catálogo, auxiliar movimientos.
 $inventoryRoles = ['administradora','auxiliar'];
-require_role($inventoryRoles);
+$articulosViewPermissions = ['articulos.ver','articulos.admin'];
+$articulosAdminPermission = 'articulos.admin';
+require_permission_or_legacy_role($articulosViewPermissions, $inventoryRoles);
+$canAdminArticulos = user_has_permission_or_legacy_role($articulosAdminPermission, ['administradora']);
+$canAdjustArticulos = user_has_permission_or_legacy_role($articulosAdminPermission, $inventoryRoles);
 
 function articulos_proveedores(): array {
   try {
@@ -92,9 +96,12 @@ function articulos_log(string $tabla, array $payload): void {
   }
 }
 
-$adminOnly = ['nuevo','guardar','editar','actualizar','baja'];
-if (in_array($action, $adminOnly, true)) {
-  require_role(['administradora']);
+$catalogAdminOnly = ['nuevo','guardar','editar','actualizar','baja'];
+if (in_array($action, $catalogAdminOnly, true)) {
+  require_permission_or_legacy_role($articulosAdminPermission, ['administradora']);
+}
+if ($action === 'ajustar') {
+  require_permission_or_legacy_role($articulosAdminPermission, $inventoryRoles);
 }
 
 switch ($action) {
@@ -152,7 +159,7 @@ case 'listar':
   ob_start(); ?>
   <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-2 mb-3">
     <h1 class="h4 m-0">Artículos</h1>
-    <?php if (user_has_role('administradora')): ?>
+    <?php if ($canAdminArticulos): ?>
       <div class="d-flex gap-2">
         <a href="?r=articulos.nuevo" class="btn btn-success btn-sm">Nuevo artículo</a>
       </div>
@@ -211,10 +218,12 @@ case 'listar':
           <td><?= e(date('Y-m-d', strtotime($r['updated_at'] ?? date('Y-m-d')))) ?></td>
           <td class="d-flex flex-wrap gap-2">
             <a class="btn btn-outline-secondary btn-sm" href="?r=articulos.historial&id=<?= (int)$r['id'] ?>">Kardex</a>
-            <a class="btn btn-outline-success btn-sm" href="?r=articulos.ajustar&id=<?= (int)$r['id'] ?>&tipo=entrada">Entrada</a>
-            <a class="btn btn-outline-warning btn-sm" href="?r=articulos.ajustar&id=<?= (int)$r['id'] ?>&tipo=salida">Salida</a>
-            <a class="btn btn-outline-info btn-sm" href="?r=articulos.ajustar&id=<?= (int)$r['id'] ?>&tipo=traspaso">Traspaso</a>
-            <?php if (user_has_role('administradora')): ?>
+            <?php if ($canAdjustArticulos): ?>
+              <a class="btn btn-outline-success btn-sm" href="?r=articulos.ajustar&id=<?= (int)$r['id'] ?>&tipo=entrada">Entrada</a>
+              <a class="btn btn-outline-warning btn-sm" href="?r=articulos.ajustar&id=<?= (int)$r['id'] ?>&tipo=salida">Salida</a>
+              <a class="btn btn-outline-info btn-sm" href="?r=articulos.ajustar&id=<?= (int)$r['id'] ?>&tipo=traspaso">Traspaso</a>
+            <?php endif; ?>
+            <?php if ($canAdminArticulos): ?>
               <a class="btn btn-outline-primary btn-sm" href="?r=articulos.editar&id=<?= (int)$r['id'] ?>">Editar</a>
               <a class="btn btn-outline-danger btn-sm" href="?r=articulos.baja&id=<?= (int)$r['id'] ?>" onclick="return confirm('¿Dar de baja lógica este artículo?');">Baja</a>
             <?php endif; ?>

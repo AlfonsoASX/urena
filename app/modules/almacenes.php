@@ -7,10 +7,12 @@ require_once __DIR__.'/../core/auth.php';
 require_once __DIR__.'/../core/almacenes.php';
 
 require_login();
-$almacenesRoles = ['administradora','auxiliar'];
-require_role($almacenesRoles);
-
 $action = $action ?? 'listar';
+$almacenesRoles = ['administradora','auxiliar'];
+$almacenesViewPermissions = ['almacenes.ver','almacenes.admin'];
+$almacenesAdminPermission = 'almacenes.admin';
+require_permission_or_legacy_role($almacenesViewPermissions, $almacenesRoles);
+$canManageAlmacenes = user_has_permission_or_legacy_role($almacenesAdminPermission, $almacenesRoles);
 almacenes_ensure_schema();
 
 function almacenes_find(int $id): ?array {
@@ -31,7 +33,7 @@ function almacenes_log(string $accion, array $payload = []): void {
 
 $adminOnly = ['nuevo','guardar','editar','actualizar','baja','activar'];
 if (in_array($action, $adminOnly, true)) {
-  require_role($almacenesRoles);
+  require_permission_or_legacy_role($almacenesAdminPermission, $almacenesRoles);
 }
 
 switch ($action) {
@@ -65,7 +67,7 @@ case 'listar':
       <h1 class="h4 m-0">Almacenes</h1>
       <div class="text-muted small">Catalogo central para articulos, ataudes y equipos.</div>
     </div>
-    <?php if (user_has_role($almacenesRoles)): ?>
+    <?php if ($canManageAlmacenes): ?>
       <a href="?r=almacenes.nuevo" class="btn btn-success btn-sm">Nuevo almacen</a>
     <?php endif; ?>
   </div>
@@ -90,7 +92,7 @@ case 'listar':
           <td><span class="badge text-bg-<?= !empty($row['activo']) ? 'success' : 'secondary' ?>"><?= !empty($row['activo']) ? 'Activo' : 'Inactivo' ?></span></td>
           <td><?= e(!empty($row['updated_at']) ? date('Y-m-d', strtotime($row['updated_at'])) : '—') ?></td>
           <td class="d-flex flex-wrap gap-2">
-            <?php if (user_has_role($almacenesRoles)): ?>
+            <?php if ($canManageAlmacenes): ?>
               <a class="btn btn-outline-primary btn-sm" href="?r=almacenes.editar&id=<?= (int)$row['id_almacen'] ?>">Editar</a>
               <?php if (!empty($row['activo'])): ?>
                 <a class="btn btn-outline-warning btn-sm" href="?r=almacenes.baja&id=<?= (int)$row['id_almacen'] ?>" onclick="return confirm('¿Inactivar este almacen?');">Inactivar</a>

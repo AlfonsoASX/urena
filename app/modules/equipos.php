@@ -12,7 +12,11 @@ almacenes_ensure_schema();
 
 $action = $action ?? 'listar';
 $roles = ['administradora', 'auxiliar'];
-require_role($roles);
+$equiposViewPermissions = ['equipos.ver','equipos.admin'];
+$equiposAdminPermission = 'equipos.admin';
+require_permission_or_legacy_role($equiposViewPermissions, $roles);
+$canAdminEquipos = user_has_permission_or_legacy_role($equiposAdminPermission, ['administradora']);
+$canMoveEquipos = user_has_permission_or_legacy_role($equiposAdminPermission, $roles);
 
 function equipos_find($id_equipo) {
   return qone("SELECT * FROM equipos WHERE id_equipo=? AND COALESCE(eliminado,0)=0", [$id_equipo]);
@@ -128,9 +132,13 @@ function equipo_movimiento_label(string $tipo): string {
   return ucwords(str_replace('_', ' ', trim($tipo)));
 }
 
-$adminOnly = ['nuevo', 'guardar', 'editar', 'actualizar', 'baja'];
-if (in_array($action, $adminOnly, true)) {
-  require_role(['administradora']);
+$catalogAdminOnly = ['nuevo', 'guardar', 'editar', 'actualizar', 'baja'];
+if (in_array($action, $catalogAdminOnly, true)) {
+  require_permission_or_legacy_role($equiposAdminPermission, ['administradora']);
+}
+$movementOnly = ['asignar', 'guardar_asignacion', 'retornar', 'guardar_retorno'];
+if (in_array($action, $movementOnly, true)) {
+  require_permission_or_legacy_role($equiposAdminPermission, $roles);
 }
 
 switch ($action) {
@@ -191,7 +199,7 @@ case 'listar':
       <h1 class="h4 m-0">Equipos operativos</h1>
       <div class="text-muted small">Listado con kardex completo y estado operativo normalizado.</div>
     </div>
-    <?php if (user_has_role('administradora')): ?>
+    <?php if ($canAdminEquipos): ?>
       <a href="?r=equipos.nuevo" class="btn btn-success btn-sm">Nuevo equipo</a>
     <?php endif; ?>
   </div>
@@ -235,12 +243,14 @@ case 'listar':
           <td><?= e($r['actualizado'] ?: '—') ?></td>
           <td class="d-flex flex-wrap gap-2">
             <a class="btn btn-outline-secondary btn-sm" href="?r=equipos.historial&id_equipo=<?= urlencode($r['id_equipo']) ?>">Kardex</a>
-            <?php if (user_has_role('administradora')): ?>
+            <?php if ($canAdminEquipos): ?>
               <a class="btn btn-outline-primary btn-sm" href="?r=equipos.editar&id_equipo=<?= urlencode($r['id_equipo']) ?>">Editar</a>
               <a class="btn btn-outline-danger btn-sm" href="?r=equipos.baja&id_equipo=<?= urlencode($r['id_equipo']) ?>" onclick="return confirm('¿Dar de baja lógica este equipo?');">Baja</a>
             <?php endif; ?>
-            <a class="btn btn-outline-success btn-sm" href="?r=equipos.asignar&id_equipo=<?= urlencode($r['id_equipo']) ?>">Asignar</a>
-            <a class="btn btn-outline-info btn-sm" href="?r=equipos.retornar&id_equipo=<?= urlencode($r['id_equipo']) ?>">Retornar</a>
+            <?php if ($canMoveEquipos): ?>
+              <a class="btn btn-outline-success btn-sm" href="?r=equipos.asignar&id_equipo=<?= urlencode($r['id_equipo']) ?>">Asignar</a>
+              <a class="btn btn-outline-info btn-sm" href="?r=equipos.retornar&id_equipo=<?= urlencode($r['id_equipo']) ?>">Retornar</a>
+            <?php endif; ?>
           </td>
         </tr>
         <?php endforeach; ?>

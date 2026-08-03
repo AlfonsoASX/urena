@@ -64,6 +64,8 @@ function auth_permisos_catalogo(): array {
     // ── Previsión / Futuros ───────────────────────────────────────────────────
     'contratos.ver'               => 'Contratos — ver',
     'contratos.admin'             => 'Contratos — crear/editar/eliminar',
+    'promociones.ver'             => 'Promociones — ver',
+    'promociones.admin'           => 'Promociones — crear/editar/inactivar',
     'pagos.ver'                   => 'Pagos y comisiones — ver',
     'pagos.admin'                 => 'Pagos y comisiones — gestionar',
     'rutas.ver'                   => 'Rutas de cobro — ver',
@@ -98,6 +100,7 @@ function auth_permisos_por_modulo(): array {
     'compras'              => 'Compras',
     'proveedores'          => 'Proveedores',
     'contratos'            => 'Contratos',
+    'promociones'          => 'Promociones',
     'pagos'                => 'Pagos y comisiones',
     'rutas'                => 'Rutas de cobro',
     'cobrador'             => 'Panel cobrador',
@@ -364,6 +367,18 @@ function user_has_permission($permisos){
   return (bool) array_intersect($permisos, user_permissions());
 }
 
+function user_has_permission_or_legacy_role($permisos, $rolesLegacy){
+  $modo_libre = $GLOBALS['cfg']['modo_libre'] ?? false;
+
+  if($modo_libre) return true;
+
+  $user = current_user();
+  if(!$user) return false;
+  if (user_is_super()) return true;
+  if (auth_permissions_enabled()) return user_has_permission($permisos);
+  return user_has_role($rolesLegacy);
+}
+
 function require_role($roles){
   if(user_has_role($roles)) return;
   flash("<div class='alert alert-danger'>No tienes permisos para esta acción.</div>");
@@ -372,6 +387,12 @@ function require_role($roles){
 
 function require_permission($permisos){
   if(user_has_permission($permisos)) return;
+  flash("<div class='alert alert-danger'>No tienes permisos para esta acción.</div>");
+  redirect('home.index');
+}
+
+function require_permission_or_legacy_role($permisos, $rolesLegacy){
+  if(user_has_permission_or_legacy_role($permisos, $rolesLegacy)) return;
   flash("<div class='alert alert-danger'>No tienes permisos para esta acción.</div>");
   redirect('home.index');
 }
