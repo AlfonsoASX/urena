@@ -46,9 +46,12 @@
 <ul class="navbar-nav me-auto">
   <?php
     $navServiciosRoles = ['administradora','auxiliar','vendedor','coordinador','caja'];
+    $navServicioPagosRoles = ['administradora','vendedor','coordinador','caja'];
     $navInventarioRoles = ['administradora','auxiliar'];
-    $navCanServicios = user_has_permission_or_legacy_role(['servicios.ver','servicios.crear','servicios.editar','servicios.cerrar','servicios.borrar'], $navServiciosRoles);
-    $navCanServicioPagos = user_has_permission_or_legacy_role('servicio_pagos.ver', $navServiciosRoles);
+    $navCanServicios = user_has_role($navServiciosRoles)
+      || user_has_permission(['servicios.ver','servicios.crear','servicios.editar','servicios.cerrar','servicios.borrar']);
+    $navCanServicioPagos = user_has_role($navServicioPagosRoles)
+      || user_has_permission('servicio_pagos.ver');
     $navCanArticulos = user_has_permission_or_legacy_role(['articulos.ver','articulos.admin'], $navInventarioRoles);
     $navCanCajas = user_has_permission_or_legacy_role(['cajas.ver','cajas.admin'], $navInventarioRoles);
     $navCanEquipos = user_has_permission_or_legacy_role(['equipos.ver','equipos.admin'], $navInventarioRoles);
@@ -142,7 +145,14 @@
       <ul class="dropdown-menu" aria-labelledby="pagosDrop">
         <li><a class="dropdown-item" href="?r=pagos.contratos">Contratos</a></li>
         <li><a class="dropdown-item" href="?r=pagos.reporte_comisiones">Comisiones vendedores</a></li>
-        <li><a class="dropdown-item" href="?r=pagos.reporte_cobradores">Reporte cobradores</a></li>
+        <li><a class="dropdown-item" href="?r=pagos.reporte_lideres">Comisiones lideres</a></li>
+        <li><a class="dropdown-item" href="?r=pagos.reporte_gerentes">Comisiones gerentes</a></li>
+        <li><a class="dropdown-item" href="?r=pagos.reporte_empresa">Distribucion empresa</a></li>
+        <li><a class="dropdown-item" href="?r=pagos.cortes_cobradores">Cortes de cobradores</a></li>
+        <li><a class="dropdown-item" href="?r=pagos.reporte_cobradores">Cobros por rango de fechas</a></li>
+        <?php if (user_has_permission_or_legacy_role('pagos.admin', ['administradora','futuroadmivo'])): ?>
+          <li><a class="dropdown-item" href="?r=pagos.configurar_cortes">Configurar corte semanal</a></li>
+        <?php endif; ?>
 <!--        <li><a class="dropdown-item" href="?r=pagos.comisiones">Comisiones manuales</a></li> -->
         <li><a class="dropdown-item" href="?r=pagos.reporte_base">Reporte de pagos/promocion</a></li>
 
@@ -163,9 +173,20 @@
       </ul>
     </li>
   <?php endif; ?>
-  <?php if (user_has_permission('usuarios.admin') || user_has_role(['administradora','admin','futuroadmivo'])): ?>
-    <li class="nav-item">
-      <a class="nav-link" href="?r=usuarios.listar">Usuarios</a>
+  <?php
+    $navCanUsuarios = user_has_permission('usuarios.admin') || user_has_role(['administradora','admin','futuroadmivo']);
+    $navCanMigraciones = user_is_super();
+  ?>
+  <?php if ($navCanUsuarios || $navCanMigraciones): ?>
+    <li class="nav-item dropdown">
+      <a class="nav-link dropdown-toggle" href="#" id="configDrop" role="button" data-bs-toggle="dropdown">Configuracion</a>
+      <ul class="dropdown-menu" aria-labelledby="configDrop">
+        <?php if ($navCanUsuarios): ?><li><a class="dropdown-item" href="?r=usuarios.listar">Usuarios y permisos</a></li><?php endif; ?>
+        <?php if ($navCanMigraciones): ?>
+          <li><a class="dropdown-item" href="?r=migraciones.index">Centro de migraciones</a></li>
+          <li><a class="dropdown-item" href="?r=maintenance.schema_repair">Mantenimiento de esquema</a></li>
+        <?php endif; ?>
+      </ul>
     </li>
   <?php endif; ?>
 <!--

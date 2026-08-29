@@ -1,4 +1,6 @@
 <?php
+date_default_timezone_set('America/Mexico_City');
+
 session_start();
 $cfg = require __DIR__.'/../config/.env.php';
 $GLOBALS['cfg'] = $cfg;
@@ -10,6 +12,7 @@ require __DIR__.'/helpers.php';
 require __DIR__.'/ui.php';
 require __DIR__.'/auth.php';
 require __DIR__.'/futuros_promociones.php';
+require __DIR__.'/cortes_cobradores.php';
 require __DIR__.'/api.php';
 require __DIR__.'/inventario_v2.php';
 require __DIR__.'/servicios_operativos.php';

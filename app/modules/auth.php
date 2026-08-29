@@ -38,12 +38,16 @@ switch ($action ?? 'login') {
       if ($usuario === '' || $pass === '') {
         $msg = "<div class='alert alert-warning'>Ingresa usuario y contraseña.</div>";
       } else {
-        // usa login() definido en core/auth.php (password_verify)
-        if (login($usuario, $pass)) {
-          flash("<div class='alert alert-success'>¡Bienvenido!</div>");
-          redirect('home.index');
-        } else {
+        try {
+          // usa login() definido en core/auth.php (password_verify)
+          if (login($usuario, $pass)) {
+            flash("<div class='alert alert-success'>¡Bienvenido!</div>");
+            redirect('home.index');
+          }
           $msg = "<div class='alert alert-danger'>Usuario o contraseña incorrectos.</div>";
+        } catch (Throwable $e) {
+          db_log_error($e, ['route'=>'auth.login']);
+          $msg = "<div class='alert alert-danger'>No fue posible conectar con la base de datos. Tus credenciales no se validaron; revisa la conexión e intenta nuevamente.</div>";
         }
       }
     }

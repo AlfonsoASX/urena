@@ -4,6 +4,7 @@ require_once __DIR__.'/../core/db.php';
 require_once __DIR__.'/../core/helpers.php';
 require_once __DIR__.'/../core/ui.php';
 require_once __DIR__.'/../core/auth.php';
+require_once __DIR__.'/../core/cortes_cobradores.php';
 
 require_login();
 
@@ -280,7 +281,30 @@ function cobrador_ticket_visita(string $titular, int $id_contrato, ?string $fech
 switch ($action) {
 
 case 'panel':
+  $idPersonalPanel = cobrador_personal_id();
+  $configCortePanel = cortes_cobradores_configuracion();
+  $periodoCortePanel = null;
+  $totalCortePanel = ['pagos'=>0,'contratos'=>0,'total'=>0.0];
+  if ($configCortePanel && $idPersonalPanel > 0) {
+    $periodoCortePanel = cortes_cobradores_periodo_actual($configCortePanel);
+    $totalCortePanel = cortes_cobradores_total_personal($periodoCortePanel, $idPersonalPanel);
+  }
   ob_start(); ?>
+  <?php if ($periodoCortePanel): ?>
+    <section class="border-top border-bottom py-3 mb-3">
+      <span class="text-muted small d-block">Acumulado del corte actual</span>
+      <strong class="display-6 d-block">$<?= number_format((float)$totalCortePanel['total'],2) ?></strong>
+      <div class="text-muted small mt-1">
+        <?= e(cortes_cobradores_formatear_limite($periodoCortePanel['inicio'])) ?> a <?= e(cortes_cobradores_formatear_limite($periodoCortePanel['fin'])) ?>
+      </div>
+      <div class="d-flex gap-4 mt-2 small">
+        <span><strong><?= (int)$totalCortePanel['pagos'] ?></strong> pagos</span>
+        <span><strong><?= (int)$totalCortePanel['contratos'] ?></strong> contratos</span>
+      </div>
+    </section>
+  <?php elseif ($idPersonalPanel > 0): ?>
+    <div class="alert alert-warning">El horario del corte semanal aun no esta configurado.</div>
+  <?php endif; ?>
   <div class="card shadow-sm">
     <div class="card-body">
       <h1 class="h4 mb-3">Panel del Cobrador</h1>

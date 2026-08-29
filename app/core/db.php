@@ -218,7 +218,9 @@ function db_schema_tracked_tables(): array {
     'proveedores',
     'futuro_contratos', 'futuro_abonos', 'futuro_comision_semanal', 'futuro_gestion', 'futuro_personal',
     'futuro_contrato_cobrador', 'futuro_contrato_vendedor', 'futuro_cont_cat_com',
-    'futuro_mostrar_catalogo_promociones', 'futuro_promocion_reglas', 'futuro_logs',
+    'futuro_mostrar_catalogo_promociones', 'futuro_promocion_reglas',
+    'futuro_contrato_promocion_condiciones', 'futuro_abono_distribucion', 'futuro_logs',
+    'futuro_corte_configuracion',
     'titular_contrato', 'titular_dom', 'titulares', 'domicilios',
     'vw_titular_contrato', 'vw_cajas_estado',
   ];
@@ -362,6 +364,8 @@ function db() {
   ];
 
   $pdo = new PDO($cfg['dsn'], $cfg['user'], $cfg['pass'], $options);
+  // El hosting opera en UTC. Cada conexion de la aplicacion trabaja en hora de Mexico.
+  $pdo->exec("SET time_zone = '-06:00'");
   db_perf_record_connect((microtime(true) - $started) * 1000);
   return $pdo;
 }

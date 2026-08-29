@@ -1,7 +1,7 @@
 <?php
 require_once __DIR__.'/../core/futuros_promociones.php';
 
-if (!user_has_role(['admin', 'vendedor', 'supervisor'])) redirect('auth.login');
+if (!user_has_role(['admin', 'administradora', 'futuroadmivo', 'vendedor', 'supervisor'])) redirect('auth.login');
 
     function __nombre_mes(int $mes): string {
   $meses = [
@@ -21,6 +21,7 @@ function __personal_activo() {
 
 function __promociones_activas() {
   $rows = futuros_promociones_catalogo(true);
+  $rows = array_values(array_filter($rows, 'futuros_promociones_regla_configurada'));
   foreach ($rows as &$row) {
     $row['concepto'] = futuros_promociones_label($row['codigo'] ?? '', $row['concepto'] ?? '');
   }
@@ -34,6 +35,12 @@ function __vendedor_actual_id(int $id_contrato): int {
     $r = qone("SELECT id_personal FROM futuro_contrato_vendedor WHERE id_contrato=? ORDER BY fecha_registro DESC LIMIT 1", [$id_contrato]);
   }
   return (int)($r['id_personal'] ?? 0);
+}
+
+function __personal_nombre_contrato(int $id_personal): string {
+  if ($id_personal <= 0) return '';
+  $row = qone("SELECT TRIM(CONCAT(COALESCE(nombre,''),' ',COALESCE(apellido_p,''),' ',COALESCE(apellido_m,''))) nombre FROM futuro_personal WHERE id_personal=?", [$id_personal]);
+  return trim((string)($row['nombre'] ?? ''));
 }
 
 function __fecha_es($fecha): string {
@@ -394,20 +401,8 @@ case 'listar':
     render('Contratos', ob_get_clean());
     break;
   case 'nuevo':
-    $estatus_opts = [
-        'ACTIVO'   => 'ACTIVO',
-        'PAGADO'   => 'PAGADO',
-        'USADO'    => 'YA SE USÓ',
-        'INACTIVO' => 'BAJA / INACTIVO'
-    ];
-    
     $paquetes = futuros_promociones_paquetes();
     $tipo_contrato_opts = array_combine($paquetes, $paquetes) ?: [];
-    
-    $tipo_pago_opts = [
-        'PARCIALIDADES' => 'PARCIALIDADES',
-        'CONTADO' => 'CONTADO'
-    ];
     $periodo_pago_opts = [
         'SEMANA' => 'SEMANA',
         'QUINCENA' => 'QUINCENA',
@@ -452,16 +447,16 @@ case 'listar':
         </div>
         
         <div class="col-md-4">
-            <?= form_select('id_promocion', 'Promoción', [0 => '-- Sin promoción --'] + $promociones_opts, 0, ['class'=>'form-select']) ?>
-        </div>
-
-        <div class="col-md-4">
-            <?= form_select('tipo_pago','Tipo de pago', $tipo_pago_opts, 'PARCIALIDADES', ['class'=>'form-select']) ?>
+          <label class="form-label">Promocion</label>
+          <select name="id_promocion" id="id_promocion" class="form-select" required>
+            <option value="">-- Selecciona promocion --</option>
+            <?php foreach ($promociones as $p): ?>
+              <option value="<?= (int)$p['id_mos_cat_com'] ?>"><?= e($p['concepto']) ?></option>
+            <?php endforeach; ?>
+          </select>
         </div>
         
-        <div class="col-md-4"><?= form_input('costo_contrato','Costo base', '28900', ['type'=>'number','step'=>'0.01','min'=>'0']) ?></div>
-        <div class="col-md-4"><?= form_input('descuento','Descuento', '0', ['type'=>'number','step'=>'0.01','min'=>'0']) ?></div>
-        <div class="col-md-4"><?= form_input('costo_final','Costo final', '0', ['type'=>'number','step'=>'0.01','min'=>'0']) ?></div>
+        <div class="col-md-4"><?= form_input('costo_contrato','Precio total', '28900', ['type'=>'number','step'=>'0.01','min'=>'0.01','required'=>true]) ?></div>
         
         <div class="col-md-4">
             <?= form_input('compromiso_pago','Pago periódico','100',['type'=>'number','step'=>'0.01','min'=>'0']) ?>
@@ -471,7 +466,13 @@ case 'listar':
             <?= form_select('periodo_pago','Periodo', $periodo_pago_opts, 'SEMANA', ['class'=>'form-select']) ?>
         </div>
         
-        <div class="col-md-4"><?= form_select('estatus','Estatus',$estatus_opts,'ACTIVO',['class'=>'form-select']) ?></div>
+        <div class="col-md-4"><?= form_input('fecha_pago_inicial','Fecha del pago inicial',date('Y-m-d'),['type'=>'date','required'=>true]) ?></div>
+
+        <div class="col-12">
+          <div class="alert alert-light border mb-0" id="resumen-promocion">
+            Selecciona una promocion para consultar el pago inicial y su distribucion.
+          </div>
+        </div>
 
         <h5 class="mt-4">Promotor</h5>
         <div class="col-md-6">
@@ -493,18 +494,19 @@ case 'listar':
     </form>
 
     <script>
-    document.addEventListener('DOMContentLoaded',()=>{
-      const base=document.querySelector('[name="costo_contrato"]');
-      const desc=document.querySelector('[name="descuento"]');
-      const fin=document.querySelector('[name="costo_final"]');
-      function recalc(){
-        const b=parseFloat(base?.value)||0, d=parseFloat(desc?.value)||0;
-        if(fin) fin.value=(b-d).toFixed(2);
+    document.addEventListener('DOMContentLoaded', function () {
+      const promociones = <?= json_encode(array_column($promociones, null, 'id_mos_cat_com'), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
+      const select = document.getElementById('id_promocion');
+      const resumen = document.getElementById('resumen-promocion');
+      const money = value => Number(value || 0).toLocaleString('es-MX', {style:'currency', currency:'MXN'});
+      function actualizar() {
+        const promo = promociones[select.value];
+        resumen.textContent = promo
+          ? `Pago inicial ${money(promo.pago_inicial)}: administrativo ${money(promo.gasto_administrativo)} y vendedor ${money(promo.comision_vendedor_inicial)}.`
+          : 'Selecciona una promocion para consultar el pago inicial y su distribucion.';
       }
-      if (base && desc) {
-        base.addEventListener('input',recalc);
-        desc.addEventListener('input',recalc);
-      }
+      select.addEventListener('change', actualizar);
+      actualizar();
     });
     </script>
     <?php
@@ -524,6 +526,28 @@ case 'listar':
     $id_promotor = (int)($_POST['id_promotor'] ?? 0);
     if ($id_promotor <= 0) {
       $_SESSION['_alerts'] = "<div class='alert alert-danger'>Debes seleccionar un promotor válido.</div>";
+      redirect('contratos.nuevo');
+    }
+
+    $id_promocion = __post_int('id_promocion', 0);
+    $regla = $id_promocion > 0 ? futuros_promociones_regla_por_promocion($id_promocion) : null;
+    if (!futuros_promociones_regla_configurada($regla)) {
+      $_SESSION['_alerts'] = "<div class='alert alert-danger'>Selecciona una promocion activa y configurada.</div>";
+      redirect('contratos.nuevo');
+    }
+    $costo_contrato = __post_float('costo_contrato', 0);
+    if (futuros_promociones_db_cents($costo_contrato) < futuros_promociones_total_fijo_cents($regla)) {
+      $_SESSION['_alerts'] = "<div class='alert alert-danger'>El precio total no alcanza para cubrir las bolsas de la promocion.</div>";
+      redirect('contratos.nuevo');
+    }
+    $fecha_pago_inicial = __post_str('fecha_pago_inicial', date('Y-m-d'));
+    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $fecha_pago_inicial)) {
+      $_SESSION['_alerts'] = "<div class='alert alert-danger'>La fecha del pago inicial no es valida.</div>";
+      redirect('contratos.nuevo');
+    }
+    $jerarquia = futuros_promociones_jerarquia($id_promotor, $regla);
+    if ($jerarquia['errores']) {
+      $_SESSION['_alerts'] = "<div class='alert alert-danger'>".e(implode(' ', $jerarquia['errores']))."</div>";
       redirect('contratos.nuevo');
     }
 
@@ -557,36 +581,40 @@ case 'listar':
       q("INSERT INTO titular_dom (id_titular, id_domicilio) VALUES (?,?)", [$id_titular, $id_domicilio]);
 
       $tipo_contrato = __post_str('tipo_contrato','');
-      $tipo_pago = __post_str('tipo_pago','');
-      $costo_contrato = __post_float('costo_contrato', 0);
-      $descuento = __post_float('descuento', 0);
-      $costo_final = __post_float('costo_final', 0);
       $periodo_pago = __post_str('periodo_pago','');
       $compromiso_pago = __post_float('compromiso_pago', 0);
-      $estatus = __contrato_estatus_normalizado($_POST['estatus'] ?? 'ACTIVO');
 
       q("INSERT INTO futuro_contratos (tipo_contrato,tipo_pago,costo_contrato,descuento,costo_final,periodo_pago,compromiso_pago,estatus,porc_promotor,porc_jefe_cuad,porc_lider,porc_empresa)
-          VALUES (?,?,?,?,?,?,?, ?,25,15,10,50)", [
-        $tipo_contrato, $tipo_pago, $costo_contrato, $descuento, $costo_final, $periodo_pago, $compromiso_pago, $estatus
+          VALUES (?,'PARCIALIDADES',?,0,?,?,?,'ACTIVO',0,0,0,0)", [
+        $tipo_contrato, $costo_contrato, $costo_contrato, $periodo_pago, $compromiso_pago
       ]);
       $id_contrato = (int)db()->lastInsertId();
 
       q("INSERT INTO titular_contrato (id_titular,id_contrato) VALUES (?,?)", [$id_titular,$id_contrato]);
 
-      $id_promocion = __post_int('id_promocion', 0);
-      if ($id_promocion > 0) {
-          q("INSERT INTO futuro_cont_cat_com (id_contrato, id_mos_cat_com) VALUES (?,?)", [$id_contrato, $id_promocion]);
-      }
+      q("INSERT INTO futuro_cont_cat_com (id_contrato, id_mos_cat_com) VALUES (?,?)", [$id_contrato, $id_promocion]);
 
       q("INSERT INTO futuro_contrato_vendedor (id_contrato,id_personal) VALUES (?,?)", [$id_contrato, $id_promotor]);
+
+      $id_condicion = futuros_promociones_crear_condicion($id_contrato, $id_promocion, $regla, $jerarquia, 0, false);
+      q("INSERT INTO futuro_abonos (id_contrato,saldo,cant_abono,fecha_registro) VALUES (?,0,?,?)", [
+        $id_contrato, $regla['pago_inicial'], $fecha_pago_inicial,
+      ]);
+      $id_abono_inicial = (int)db()->lastInsertId();
+      q("UPDATE futuro_contrato_promocion_condiciones SET id_abono_inicial=? WHERE id_condicion=?", [$id_abono_inicial,$id_condicion]);
+      futuros_promociones_reconstruir_distribuciones($id_contrato);
+      if (futuros_promociones_db_cents($costo_contrato) === futuros_promociones_db_cents($regla['pago_inicial'])) {
+        q("UPDATE futuro_contratos SET estatus='PAGADO' WHERE id_contrato=?", [$id_contrato]);
+      }
 
       db()->commit();
 
       $_SESSION['_alerts'] = "<div class='alert alert-success'>Contrato #{$id_contrato} guardado correctamente.</div>";
       redirect("contratos.ver&id_contrato={$id_contrato}");
-    } catch (Exception $e) {
+    } catch (Throwable $e) {
       if (db()->inTransaction()) db()->rollBack();
-      $_SESSION['_alerts'] = "<div class='alert alert-danger'>Error: ".$e->getMessage()."</div>";
+      db_log_error($e, ['route'=>'contratos.guardar']);
+      $_SESSION['_alerts'] = "<div class='alert alert-danger'>No se pudo guardar el contrato.</div>";
       redirect('contratos.nuevo');
     }
     break;
@@ -606,6 +634,7 @@ case 'listar':
 
     $promotores = __personal_activo();
     $id_promotor_actual = __vendedor_actual_id($idc);
+    $condicion = futuros_promociones_condicion_contrato($idc);
     
     $promociones = __promociones_activas();
     $promociones_opts = [];
@@ -614,7 +643,34 @@ case 'listar':
     }
     
     $promo_actual = qone("SELECT id_mos_cat_com FROM futuro_cont_cat_com WHERE id_contrato = ? ORDER BY id_cont_cat_com DESC LIMIT 1", [$idc]);
-    $id_promocion_sel = (int)($promo_actual['id_mos_cat_com'] ?? 0);
+    $id_promocion_sel = (int)($condicion['id_mos_cat_com'] ?? $promo_actual['id_mos_cat_com'] ?? 0);
+    $promocion_firmada = $id_promocion_sel > 0
+      ? qone("SELECT id_mos_cat_com,codigo,concepto,estatus FROM futuro_mostrar_catalogo_promociones WHERE id_mos_cat_com=?", [$id_promocion_sel])
+      : null;
+    $promocion_firmada_label = $promocion_firmada
+      ? futuros_promociones_label($promocion_firmada['codigo'] ?? '', $promocion_firmada['concepto'] ?? '')
+      : 'Sin promocion';
+    $promocion_requiere_cambio = false;
+
+    if (!$condicion && $promocion_firmada && !isset($promociones_opts[$id_promocion_sel])) {
+      $codigo_canonico = futuros_promociones_codigo_canonico(
+        (string)($promocion_firmada['codigo'] ?? ''),
+        (string)($promocion_firmada['concepto'] ?? '')
+      );
+      $promocion_equivalente = $codigo_canonico
+        ? futuros_promociones_buscar_codigo($codigo_canonico)
+        : null;
+      $id_equivalente = (int)($promocion_equivalente['id_mos_cat_com'] ?? 0);
+
+      if ($id_equivalente > 0 && isset($promociones_opts[$id_equivalente])) {
+        $id_promocion_sel = $id_equivalente;
+      } else {
+        $promociones_opts = [
+          $id_promocion_sel => $promocion_firmada_label.' (asignada actualmente; requiere reemplazo)'
+        ] + $promociones_opts;
+        $promocion_requiere_cambio = true;
+      }
+    }
 
     $estatus_opts = [
         'ACTIVO'   => 'ACTIVO',
@@ -626,10 +682,6 @@ case 'listar':
     $paquetes = futuros_promociones_paquetes();
     $tipo_contrato_opts = array_combine($paquetes, $paquetes) ?: [];
     
-    $tipo_pago_opts = [
-        'PARCIALIDADES' => 'PARCIALIDADES',
-        'CONTADO' => 'CONTADO'
-    ];
     $periodo_pago_opts = [
         'SEMANA' => 'SEMANA',
         'QUINCENA' => 'QUINCENA',
@@ -665,16 +717,29 @@ case 'listar':
         </div>
         
         <div class="col-md-4">
-            <?= form_select('id_promocion', 'Promoción', [0 => '-- Sin promoción --'] + $promociones_opts, $id_promocion_sel, ['class'=>'form-select']) ?>
+          <?php if ($condicion): ?>
+            <label class="form-label">Promocion firmada</label>
+            <input class="form-control" value="<?= e($promocion_firmada_label) ?>" readonly>
+            <div class="form-text">La promocion ya tiene condiciones economicas registradas.</div>
+          <?php else: ?>
+            <?= form_select(
+              'id_promocion',
+              'Promocion',
+              $promociones_opts,
+              $id_promocion_sel,
+              ['class'=>'form-select', 'required'=>true, 'placeholder'=>'-- Selecciona promocion activa --']
+            ) ?>
+            <?php if ($promocion_requiere_cambio): ?>
+              <div class="form-text text-warning">
+                La promocion asignada ya no esta disponible. Selecciona una promocion activa antes de guardar.
+              </div>
+            <?php endif; ?>
+          <?php endif; ?>
         </div>
-
         <div class="col-md-4">
-            <?= form_select('tipo_pago','Tipo de pago', $tipo_pago_opts, $c['tipo_pago'] ?? '', ['class'=>'form-select']) ?>
+          <label class="form-label">Precio total</label>
+          <input class="form-control" value="$<?= number_format((float)($c['costo_contrato'] ?? 0), 2) ?>" readonly>
         </div>
-        
-        <div class="col-md-4"><?= form_input('costo_contrato','Costo base',$c['costo_contrato'] ?? 0,['type'=>'number','step'=>'0.01','min'=>'0']) ?></div>
-        <div class="col-md-4"><?= form_input('descuento','Descuento',$c['descuento'] ?? 0,['type'=>'number','step'=>'0.01','min'=>'0']) ?></div>
-        <div class="col-md-4"><?= form_input('costo_final','Costo final',$c['costo_final'] ?? 0,['type'=>'number','step'=>'0.01','min'=>'0']) ?></div>
         
         <div class="col-md-4">
             <?= form_input('compromiso_pago','Pago periódico',$c['compromiso_pago'] ?? 0,['type'=>'number','step'=>'0.01','min'=>'0']) ?>
@@ -686,18 +751,15 @@ case 'listar':
         
         <div class="col-md-4"><?= form_select('estatus','Estatus',$estatus_opts, __contrato_estatus_normalizado($c['estatus'] ?? 'ACTIVO'), ['class'=>'form-select']) ?></div>
 
-        <h5 class="mt-4">Promotor</h5>
+        <h5 class="mt-4">Promotor y jerarquia firmados</h5>
         <div class="col-md-6">
           <label class="form-label">Promotor asignado</label>
-          <select name="id_promotor" class="form-select" required>
-            <option value="">-- Selecciona promotor --</option>
-            <?php foreach ($promotores as $p): ?>
-              <option value="<?= (int)$p['id_personal'] ?>" <?= ((int)$p['id_personal']===(int)$id_promotor_actual) ? 'selected' : '' ?>>
-                <?= e($p['nombre']) ?>
-              </option>
-            <?php endforeach; ?>
-          </select>
+          <input class="form-control" value="<?= e(__personal_nombre_contrato($id_promotor_actual)) ?>" readonly>
         </div>
+        <?php if ($condicion): ?>
+          <div class="col-md-3"><label class="form-label">Lider</label><input class="form-control" value="<?= e(__personal_nombre_contrato((int)$condicion['id_lider'])) ?>" readonly></div>
+          <div class="col-md-3"><label class="form-label">Gerente</label><input class="form-control" value="<?= e(__personal_nombre_contrato((int)$condicion['id_gerente'])) ?>" readonly></div>
+        <?php endif; ?>
 
         <div class="col-12 d-grid mt-3">
           <button class="btn btn-primary">Actualizar contrato</button>
@@ -713,11 +775,6 @@ case 'listar':
     try { csrf_verify(); } catch (RuntimeException $e) { $_SESSION['_alerts'] = "<div class='alert alert-danger'>Sesión inválida.</div>"; redirect('contratos.listar'); }
 
     $idc = (int)($_GET['id_contrato'] ?? 0);
-    $id_promotor = (int)($_POST['id_promotor'] ?? 0);
-    if ($id_promotor <= 0) {
-      $_SESSION['_alerts'] = "<div class='alert alert-danger'>Selecciona un promotor válido.</div>";
-      redirect("contratos.editar&id_contrato={$idc}");
-    }
 
     $nombre = __post_str('nombre','');
     if ($nombre === '') {
@@ -726,6 +783,37 @@ case 'listar':
     }
 
     $estatus = __contrato_estatus_normalizado($_POST['estatus'] ?? 'ACTIVO');
+    $condicion = futuros_promociones_condicion_contrato($idc);
+    $id_promocion = 0;
+    $id_promocion_actual = 0;
+
+    if (!$condicion) {
+      $id_promocion = __post_int('id_promocion', 0);
+      $promociones_permitidas = futuros_promociones_opciones(true, true);
+      $regla = isset($promociones_permitidas[$id_promocion])
+        ? futuros_promociones_regla_por_promocion($id_promocion)
+        : null;
+      if (!isset($promociones_permitidas[$id_promocion]) || !futuros_promociones_regla_configurada($regla)) {
+        $_SESSION['_alerts'] = "<div class='alert alert-danger'>Selecciona una promocion activa y configurada.</div>";
+        redirect("contratos.editar&id_contrato={$idc}");
+      }
+
+      $contrato_actual = qone("SELECT costo_contrato,costo_final FROM futuro_contratos WHERE id_contrato=?", [$idc]);
+      $costo_contrato = (float)($contrato_actual['costo_final'] ?? $contrato_actual['costo_contrato'] ?? 0);
+      if (futuros_promociones_db_cents($costo_contrato) < futuros_promociones_total_fijo_cents($regla)) {
+        $_SESSION['_alerts'] = "<div class='alert alert-danger'>El precio total no alcanza para cubrir las bolsas de la promocion.</div>";
+        redirect("contratos.editar&id_contrato={$idc}");
+      }
+
+      $jerarquia = futuros_promociones_jerarquia(__vendedor_actual_id($idc), $regla);
+      if ($jerarquia['errores']) {
+        $_SESSION['_alerts'] = "<div class='alert alert-danger'>".e(implode(' ', $jerarquia['errores']))."</div>";
+        redirect("contratos.editar&id_contrato={$idc}");
+      }
+
+      $promocion_actual = qone("SELECT id_mos_cat_com FROM futuro_cont_cat_com WHERE id_contrato=? ORDER BY id_cont_cat_com DESC LIMIT 1", [$idc]);
+      $id_promocion_actual = (int)($promocion_actual['id_mos_cat_com'] ?? 0);
+    }
 
     try {
       db()->beginTransaction();
@@ -755,26 +843,18 @@ case 'listar':
       }
 
       q("UPDATE futuro_contratos
-         SET tipo_contrato=?, tipo_pago=?, costo_contrato=?, descuento=?, costo_final=?, periodo_pago=?, compromiso_pago=?, estatus=?
+         SET tipo_contrato=?, periodo_pago=?, compromiso_pago=?, estatus=?
          WHERE id_contrato=?", [
         __post_str('tipo_contrato',''),
-        __post_str('tipo_pago',''),
-        __post_float('costo_contrato',0),
-        __post_float('descuento',0),
-        __post_float('costo_final',0),
         __post_str('periodo_pago',''),
         __post_float('compromiso_pago',0),
         $estatus,
         $idc
       ]);
 
-      $id_promocion = __post_int('id_promocion', 0);
-      q("DELETE FROM futuro_cont_cat_com WHERE id_contrato = ?", [$idc]);
-      if ($id_promocion > 0) {
-          q("INSERT INTO futuro_cont_cat_com (id_contrato, id_mos_cat_com) VALUES (?,?)", [$idc, $id_promocion]);
+      if (!$condicion && $id_promocion !== $id_promocion_actual) {
+        q("INSERT INTO futuro_cont_cat_com (id_contrato,id_mos_cat_com) VALUES (?,?)", [$idc,$id_promocion]);
       }
-
-      q("INSERT INTO futuro_contrato_vendedor (id_contrato,id_personal) VALUES (?,?)", [$idc, $id_promotor]);
 
       db()->commit();
 
@@ -820,6 +900,10 @@ case 'listar':
     if (!$c) redirect('contratos.listar');
 
     $fecha_contrato = __fecha_es($c['fecha_registro'] ?? null);
+    $condicion = futuros_promociones_condicion_contrato($idc);
+    $pago_inicial_texto = number_format((float)($condicion['pago_inicial'] ?? 0), 2);
+    $compromiso_texto = number_format((float)($c['compromiso_pago'] ?? 0), 2);
+    $periodo_texto = strtolower((string)($c['periodo_pago'] ?? 'periodico'));
 
     ob_start(); ?>
     <div class="">
@@ -846,7 +930,7 @@ case 'listar':
 
       <p>
         El paquete anterior será proporcionado en la cd. de León, Gto. en nuestras instalaciones, además tendrá un costo de
-        $<?= number_format((float)$c['costo_final'],2) ?> pesos con un pago inicial de $100.00 pesos y con pagos semanales de $100.00 pesos.
+        $<?= number_format((float)$c['costo_final'],2) ?> pesos con un pago inicial de $<?= e($pago_inicial_texto) ?> pesos y pagos <?= e($periodo_texto) ?> de $<?= e($compromiso_texto) ?> pesos.
         Si el cliente desea aportar 2 mensualidades consecutivas podrá hacerlo para terminar de pagar más pronto dicho convenio.
         Si el cliente deja de aportar 2 mensualidades consecutivas, será motivo para rescindir el presente contrato y perderá en su caso las mensualidades aportadas.
       </p>
@@ -908,6 +992,10 @@ case 'listar':
       $folio = $idc.'/'.$anio_folio;
       $fecha_contrato = __fecha_es($c['fecha_registro'] ?? null);
       $tipo_contrato = htmlspecialchars($c['tipo_contrato'] ?? '', ENT_QUOTES, 'UTF-8');
+      $condicion = futuros_promociones_condicion_contrato($idc);
+      $pago_inicial = number_format((float)($condicion['pago_inicial'] ?? 0), 2);
+      $compromiso = number_format((float)($c['compromiso_pago'] ?? 0), 2);
+      $periodo = strtolower((string)($c['periodo_pago'] ?? 'periodico'));
 
 
       $html = '<html><head><meta charset="utf-8">
@@ -1011,7 +1099,7 @@ $html .= '<h2>CONTRATO DE SERVICIOS A PREVISIÓN</h2>';
         <li>El contrato podrá ser transferible para cualquier persona.</li>
       </ul>';
 
-      $html .= '<p>El paquete anterior será proporcionado en la cd. de León, Gto. En nuestras instalaciones, además tendrá un costo de $'.$costo.' pesos con un pago inicial de $100.00 pesos y con pagos semanales de $100.00 pesos. Si el cliente desea aportar 2 mensualidades consecutivas podrá hacerlo para terminar de pagar más pronto dicho convenio. Si el cliente deja de aportar 2 mensualidades consecutivas, será motivo para rescindir el presente contrato y perderá en su caso las mensualidades aportadas.</p>';
+      $html .= '<p>El paquete anterior será proporcionado en la cd. de León, Gto. En nuestras instalaciones, además tendrá un costo de $'.$costo.' pesos con un pago inicial de $'.$pago_inicial.' pesos y pagos '.htmlspecialchars($periodo,ENT_QUOTES,'UTF-8').' de $'.$compromiso.' pesos. Si el cliente desea aportar pagos consecutivos podrá hacerlo para terminar de pagar más pronto dicho convenio.</p>';
       $html .= '<p>Si el cliente llega a necesitar del servicio de la incineración antes de haber cubierto el costo del mismo, deberá cubrir las mensualidades restantes en el momento de solicitar el servicio para poder hacer efectivo el servicio.</p>';
       $html .= '<p>En caso de fallecimiento accidental instantáneo del titular únicamente, quedará automáticamente liquidado el saldo, siempre y cuando vaya al corriente de sus pagos.</p>';
       $html .= '<p>Nota: Si el cliente requiere un servicio extra que no esté estipulado en las cláusulas anteriores, los gastos correrán por cuenta del mismo.</p>';
