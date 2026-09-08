@@ -13,10 +13,7 @@ if (!user_has_role(['admin', 'administradora', 'futuroadmivo', 'vendedor', 'supe
 }
 
 function __personal_activo() {
-  return qall("SELECT id_personal, CONCAT(nombre,' ',apellido_p,' ',apellido_m) AS nombre
-               FROM futuro_personal
-               WHERE (estatus IS NULL OR estatus NOT IN ('baja','inactivo'))
-               ORDER BY nombre ASC");
+  return usuarios_directorio_activos(['vendedor']);
 }
 
 function __promociones_activas() {
@@ -30,17 +27,12 @@ function __promociones_activas() {
 }
 
 function __vendedor_actual_id(int $id_contrato): int {
-  $r = qone("SELECT id_personal FROM futuro_contrato_vendedor WHERE id_contrato=? ORDER BY id_cont_vend DESC LIMIT 1", [$id_contrato]);
-  if (!$r) {
-    $r = qone("SELECT id_personal FROM futuro_contrato_vendedor WHERE id_contrato=? ORDER BY fecha_registro DESC LIMIT 1", [$id_contrato]);
-  }
-  return (int)($r['id_personal'] ?? 0);
+  $r = qone("SELECT id_usuario_vendedor FROM futuro_contratos WHERE id_contrato=?", [$id_contrato]);
+  return (int)($r['id_usuario_vendedor'] ?? 0);
 }
 
-function __personal_nombre_contrato(int $id_personal): string {
-  if ($id_personal <= 0) return '';
-  $row = qone("SELECT TRIM(CONCAT(COALESCE(nombre,''),' ',COALESCE(apellido_p,''),' ',COALESCE(apellido_m,''))) nombre FROM futuro_personal WHERE id_personal=?", [$id_personal]);
-  return trim((string)($row['nombre'] ?? ''));
+function __personal_nombre_contrato(int $id_usuario): string {
+  return usuarios_directorio_nombre($id_usuario, '');
 }
 
 function __fecha_es($fecha): string {
@@ -480,7 +472,7 @@ case 'listar':
           <select name="id_promotor" class="form-select" required>
             <option value="">-- Selecciona promotor --</option>
             <?php foreach ($promotores as $p): ?>
-              <option value="<?= (int)$p['id_personal'] ?>">
+              <option value="<?= (int)$p['id'] ?>">
                 <?= e($p['nombre']) ?>
               </option>
             <?php endforeach; ?>
@@ -584,17 +576,16 @@ case 'listar':
       $periodo_pago = __post_str('periodo_pago','');
       $compromiso_pago = __post_float('compromiso_pago', 0);
 
-      q("INSERT INTO futuro_contratos (tipo_contrato,tipo_pago,costo_contrato,descuento,costo_final,periodo_pago,compromiso_pago,estatus,porc_promotor,porc_jefe_cuad,porc_lider,porc_empresa)
-          VALUES (?,'PARCIALIDADES',?,0,?,?,?,'ACTIVO',0,0,0,0)", [
-        $tipo_contrato, $costo_contrato, $costo_contrato, $periodo_pago, $compromiso_pago
+      q("INSERT INTO futuro_contratos (tipo_contrato,tipo_pago,costo_contrato,descuento,costo_final,periodo_pago,compromiso_pago,estatus,porc_promotor,porc_jefe_cuad,porc_lider,porc_empresa,id_usuario_vendedor,id_usuario_lider,id_usuario_gerente)
+          VALUES (?,'PARCIALIDADES',?,0,?,?,?,'ACTIVO',0,0,0,0,?,?,?)", [
+        $tipo_contrato, $costo_contrato, $costo_contrato, $periodo_pago, $compromiso_pago,
+        $jerarquia['id_vendedor'],$jerarquia['id_lider'],$jerarquia['id_gerente'],
       ]);
       $id_contrato = (int)db()->lastInsertId();
 
       q("INSERT INTO titular_contrato (id_titular,id_contrato) VALUES (?,?)", [$id_titular,$id_contrato]);
 
       q("INSERT INTO futuro_cont_cat_com (id_contrato, id_mos_cat_com) VALUES (?,?)", [$id_contrato, $id_promocion]);
-
-      q("INSERT INTO futuro_contrato_vendedor (id_contrato,id_personal) VALUES (?,?)", [$id_contrato, $id_promotor]);
 
       $id_condicion = futuros_promociones_crear_condicion($id_contrato, $id_promocion, $regla, $jerarquia, 0, false);
       q("INSERT INTO futuro_abonos (id_contrato,saldo,cant_abono,fecha_registro) VALUES (?,0,?,?)", [
@@ -757,8 +748,8 @@ case 'listar':
           <input class="form-control" value="<?= e(__personal_nombre_contrato($id_promotor_actual)) ?>" readonly>
         </div>
         <?php if ($condicion): ?>
-          <div class="col-md-3"><label class="form-label">Lider</label><input class="form-control" value="<?= e(__personal_nombre_contrato((int)$condicion['id_lider'])) ?>" readonly></div>
-          <div class="col-md-3"><label class="form-label">Gerente</label><input class="form-control" value="<?= e(__personal_nombre_contrato((int)$condicion['id_gerente'])) ?>" readonly></div>
+          <div class="col-md-3"><label class="form-label">Lider</label><input class="form-control" value="<?= e(__personal_nombre_contrato((int)$condicion['id_usuario_lider'])) ?>" readonly></div>
+          <div class="col-md-3"><label class="form-label">Gerente</label><input class="form-control" value="<?= e(__personal_nombre_contrato((int)$condicion['id_usuario_gerente'])) ?>" readonly></div>
         <?php endif; ?>
 
         <div class="col-12 d-grid mt-3">

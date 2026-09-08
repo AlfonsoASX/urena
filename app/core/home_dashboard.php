@@ -74,7 +74,7 @@ function home_dashboard_widgets(): array {
       SELECT g.id_contrato, g.fecha_proxima_visita,
              COALESCE(t.titular,'') AS titular,
              COALESCE(d.colonia,'') AS colonia,
-             CONCAT(COALESCE(p.nombre,''),' ',COALESCE(p.apellido_p,'')) AS cobrador,
+             COALESCE(p.nombre,'') AS cobrador,
              CASE
                WHEN g.fecha_proxima_visita IS NULL THEN 'sin_programar'
                WHEN g.fecha_proxima_visita < CURDATE() THEN 'vencida'
@@ -84,8 +84,7 @@ function home_dashboard_widgets(): array {
       FROM futuro_gestion g
       JOIN futuro_contratos c ON c.id_contrato = g.id_contrato
       LEFT JOIN vw_titular_contrato t ON t.id_contrato = g.id_contrato
-      LEFT JOIN futuro_contrato_cobrador fc ON fc.id_contrato = g.id_contrato
-      LEFT JOIN futuro_personal p ON p.id_personal = fc.id_personal
+      LEFT JOIN usuarios p ON p.id = g.id_usuario
       LEFT JOIN titular_contrato tc ON tc.id_contrato = c.id_contrato
       LEFT JOIN titular_dom td ON td.id_titular = tc.id_titular
       LEFT JOIN domicilios d ON d.id_domicilio = td.id_domicilio
@@ -100,11 +99,10 @@ function home_dashboard_widgets(): array {
     $widgets['gestiones_hoy'] = qall("
       SELECT g.latitud, g.longitud,
              COALESCE(t.titular,'') AS titular,
-             CONCAT(COALESCE(p.nombre,''),' ',COALESCE(p.apellido_p,'')) AS cobrador
+             COALESCE(p.nombre,'') AS cobrador
       FROM futuro_gestion g
       LEFT JOIN vw_titular_contrato t ON t.id_contrato = g.id_contrato
-      LEFT JOIN futuro_contrato_cobrador fc ON fc.id_contrato = g.id_contrato
-      LEFT JOIN futuro_personal p ON p.id_personal = fc.id_personal
+      LEFT JOIN usuarios p ON p.id = g.id_usuario
       WHERE DATE(g.fecha_registro)=CURDATE()
         AND g.latitud IS NOT NULL AND g.longitud IS NOT NULL
         AND g.latitud!=0 AND g.longitud!=0

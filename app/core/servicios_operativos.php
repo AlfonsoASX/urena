@@ -3,6 +3,7 @@
 require_once __DIR__.'/db.php';
 require_once __DIR__.'/helpers.php';
 require_once __DIR__.'/auth.php';
+require_once __DIR__.'/usuarios_directorio.php';
 require_once __DIR__.'/inventario_v2.php';
 require_once __DIR__.'/almacenes.php';
 
@@ -488,12 +489,14 @@ function so_role_filter_sql(array $roles): array {
   return [" AND COALESCE(u.perfil,'') IN ({$placeholders})", $roles];
 }
 
-function so_user_options(array $roles = []): array {
+function so_user_options(array $puestos = []): array {
   if (!so_table_exists('usuarios')) return [];
-  [$extraSql, $params] = so_role_filter_sql($roles);
+  $puestos = array_values(array_intersect(array_keys(usuarios_directorio_puestos()), array_unique($puestos)));
+  $params = $puestos;
+  $extraSql = $puestos ? ' AND u.puesto IN ('.implode(',', array_fill(0,count($puestos),'?')).')' : '';
   try {
     $rows = qall("
-      SELECT u.id, u.nombre, u.usuario, COALESCE(u.perfil,'') AS perfil
+      SELECT u.id,u.nombre,u.usuario,u.puesto
       FROM usuarios u
       WHERE COALESCE(u.estatus,'ACTIVO') = 'ACTIVO' {$extraSql}
       ORDER BY u.nombre ASC, u.usuario ASC

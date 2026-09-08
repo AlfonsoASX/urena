@@ -208,7 +208,7 @@ function db_schema_snapshot_write(array $snapshot): void {
 
 function db_schema_tracked_tables(): array {
   return [
-    'usuarios', 'roles', 'usuarios_roles', 'permisos', 'roles_permisos',
+    'usuarios', 'usuarios_personal_legacy', 'roles', 'usuarios_roles', 'permisos', 'roles_permisos',
     'servicios', 'fallecido', 'servicio_fallecido', 'servicio_asignacion', 'servicio_seguimiento',
     'servicio_cierre', 'servicio_pagos', 'servicio_bitacora', 'servicio_articulos', 'kardex_articulos',
     'servicio_caja', 'renta_cajas', 'servicio_equipo',
@@ -217,10 +217,10 @@ function db_schema_tracked_tables(): array {
     'cajas', 'cajas_movimientos', 'equipos', 'equipos_movimientos', 'vehiculos', 'salas',
     'proveedores',
     'futuro_contratos', 'futuro_abonos', 'futuro_comision_semanal', 'futuro_gestion', 'futuro_personal',
-    'futuro_contrato_cobrador', 'futuro_contrato_vendedor', 'futuro_cont_cat_com',
+    'futuro_contrato_cobrador', 'futuro_contrato_vendedor', 'futuro_contrato_lider', 'futuro_contrato_jefecuad', 'futuro_abono_cobrador', 'futuro_cont_cat_com',
     'futuro_mostrar_catalogo_promociones', 'futuro_promocion_reglas',
     'futuro_contrato_promocion_condiciones', 'futuro_abono_distribucion', 'futuro_logs',
-    'futuro_corte_configuracion',
+    'futuro_corte_configuracion', 'cortes_pagos', 'futuro_bono_4ventas', 'futuro_bono_reco',
     'titular_contrato', 'titular_dom', 'titulares', 'domicilios',
     'vw_titular_contrato', 'vw_cajas_estado',
   ];

@@ -2,6 +2,28 @@
 
 require_once __DIR__.'/db.php';
 
+function inventario_caja_materiales(): array {
+  return [
+    'metalico' => 'Metálico',
+    'madera' => 'Madera',
+    'tapizado' => 'Tapizado',
+  ];
+}
+
+function inventario_caja_material_normalizar(?string $material): ?string {
+  $material = strtr(trim((string)$material), [
+    'á'=>'a','é'=>'e','í'=>'i','ó'=>'o','ú'=>'u',
+    'Á'=>'A','É'=>'E','Í'=>'I','Ó'=>'O','Ú'=>'U',
+  ]);
+  $material = strtolower($material);
+  return array_key_exists($material, inventario_caja_materiales()) ? $material : null;
+}
+
+function inventario_caja_material_label(?string $material): string {
+  $material = inventario_caja_material_normalizar($material);
+  return $material !== null ? inventario_caja_materiales()[$material] : 'Sin especificar';
+}
+
 function inventario_schema_bootstrap(bool $force = false): void {
   static $ready = false;
   static $suppressed = false;
@@ -80,6 +102,7 @@ function inventario_schema_bootstrap(bool $force = false): void {
       CREATE TABLE IF NOT EXISTS cajas (
         codigo VARCHAR(60) PRIMARY KEY,
         modelo VARCHAR(120) NOT NULL,
+        material VARCHAR(20) DEFAULT NULL,
         estado VARCHAR(30) NOT NULL DEFAULT 'nuevo',
         ubicacion VARCHAR(120) DEFAULT NULL,
         color VARCHAR(60) DEFAULT NULL,
@@ -100,6 +123,7 @@ function inventario_schema_bootstrap(bool $force = false): void {
   }
   foreach ([
     'modelo' => "VARCHAR(120) NOT NULL DEFAULT ''",
+    'material' => "VARCHAR(20) DEFAULT NULL",
     'estado' => "VARCHAR(30) NOT NULL DEFAULT 'nuevo'",
     'ubicacion' => "VARCHAR(120) DEFAULT NULL",
     'color' => "VARCHAR(60) DEFAULT NULL",
@@ -118,6 +142,7 @@ function inventario_schema_bootstrap(bool $force = false): void {
     db_add_column_if_missing('cajas', $column, $ddl);
   }
   db_add_index_if_missing('cajas', 'idx_cajas_almacen', 'INDEX idx_cajas_almacen (id_almacen)');
+  db_add_index_if_missing('cajas', 'idx_cajas_material', 'INDEX idx_cajas_material (material)');
 
   try {
     q("

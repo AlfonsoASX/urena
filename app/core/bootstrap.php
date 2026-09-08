@@ -11,6 +11,7 @@ require __DIR__.'/performance_schema.php';
 require __DIR__.'/helpers.php';
 require __DIR__.'/ui.php';
 require __DIR__.'/auth.php';
+require __DIR__.'/usuarios_directorio.php';
 require __DIR__.'/futuros_promociones.php';
 require __DIR__.'/cortes_cobradores.php';
 require __DIR__.'/api.php';

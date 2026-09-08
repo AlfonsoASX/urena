@@ -38,7 +38,7 @@ $allowed = [
   'cobrador'    => ['panel','contratos','pago','pagos','estado','ticket', 'gestion'],
   'contratos'   => ['titulo_pdf','pdf','listar','nuevo','guardar','editar','actualizar','ver', 'eliminar'],
   'rutas'       => ['contratos', 'cobradores', 'asignar', 'asignar_masivo', ''],
-  'usuarios'    => ['listar','nuevo','guardar','editar','actualizar','roles','guardar_rol','permisos','guardar_permiso','asignar_roles','asignar_permisos','cambiar_password', 'eliminar', 'editar_rol', 'actualizar_rol'],
+  'usuarios'    => ['listar','nuevo','guardar','editar','actualizar','roles','guardar_rol','permisos','guardar_permiso','asignar_roles','asignar_permisos','cambiar_password','eliminar','editar_rol','actualizar_rol','directorio','directorio_guardar_mapeo'],
   'maintenance' => ['schema_repair','perf_report'],
   'migraciones' => ['index','inicializar','guardar','validar','ejecutar','consulta','descargar_respaldo'],
 
@@ -52,7 +52,7 @@ if (!isset($allowed[$module]) || !in_array($action, $allowed[$module])) {
 }
 
 //echo $perfil;
-if ($perfil === 'cobrador' && $module !== 'cobrador' && $module !== 'auth') {
+if (($_SESSION['user']['puesto'] ?? '') === 'cobrador' && $module !== 'cobrador' && $module !== 'auth') {
   header('Location: index.php?r=cobrador.panel');
   exit;
 }

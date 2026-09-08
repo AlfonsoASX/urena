@@ -180,7 +180,7 @@ default:
   $equipos = so_servicio_equipos_asignados($id);
   $equiposGrupo = so_servicio_equipos_asignados_grupo($id);
   $articulos = so_servicio_articulos_asignados($id);
-  $auxiliares = so_user_options(['administradora','auxiliar','coordinador']);
+  $auxiliares = so_user_options(['auxiliar']);
   $cajaActiva = $cajas[0] ?? null;
   $almacenRetornoOpts = almacenes_options(null, 'Selecciona almacen');
 

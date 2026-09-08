@@ -18,11 +18,8 @@ if (in_array($action, ['reporte_base', 'reporte_comisiones', 'reporte_lideres', 
 /** ---------------------------------------------
  * Catálogos básicos
  * ---------------------------------------------*/
-function __get_personal_activo() {
-  return qall("SELECT id_personal, CONCAT(nombre,' ',apellido_p,' ',apellido_m) AS nombre
-               FROM futuro_personal
-               WHERE (estatus IS NULL OR estatus NOT IN ('baja','inactivo'))
-               ORDER BY nombre ASC");
+function __get_personal_activo(array $puestos = []): array {
+  return usuarios_directorio_activos($puestos);
 }
 
 /** ---------------------------------------------
@@ -69,14 +66,23 @@ function __rango_mes(string $mes): array {
   return [$inicio, date('Y-m-t', strtotime($inicio))];
 }
 
-function __nombre_personal(int $id_personal): string {
-  if ($id_personal <= 0) return '';
-  $row = qone("
-    SELECT TRIM(CONCAT(COALESCE(nombre,''),' ',COALESCE(apellido_p,''),' ',COALESCE(apellido_m,''))) AS nombre
-    FROM futuro_personal
-    WHERE id_personal=?
-  ", [$id_personal]);
-  return trim((string)($row['nombre'] ?? ''));
+function __nombre_personal(int $idUsuario): string {
+  return usuarios_directorio_nombre($idUsuario, '');
+}
+
+function __id_usuario_parametro(array $legacyKeys = ['id_personal']): int {
+  $idUsuario = (int)($_GET['id_usuario'] ?? 0);
+  if ($idUsuario > 0) return $idUsuario;
+  foreach ($legacyKeys as $key) {
+    $legacy = (int)($_GET[$key] ?? 0);
+    if ($legacy <= 0) continue;
+    if (db_table_exists('usuarios_personal_legacy')) {
+      $row = qone("SELECT id_usuario FROM usuarios_personal_legacy WHERE id_personal=?", [$legacy]);
+      if ($row) return (int)$row['id_usuario'];
+    }
+    return $legacy;
+  }
+  return 0;
 }
 
 function __rango_reporte_actual(): array {
@@ -107,7 +113,7 @@ function __reporte_avisos_calculo_historico(array $diagnostico): void { ?>
 
 function __render_reporte_personal(string $tipo, string $titulo, string $ruta): void {
   [$f1,$f2] = __rango_reporte_actual();
-  $idPersonal = (int)($_GET['id_personal'] ?? 0);
+  $idPersonal = __id_usuario_parametro();
   $rows = array_values(array_filter(
     futuros_promociones_pagos_resueltos($f1,$f2,20000),
     fn($row) => ($row['beneficiario_tipo'] ?? '') === $tipo && (int)($row['beneficiario_id'] ?? 0) > 0
@@ -133,7 +139,7 @@ function __render_reporte_personal(string $tipo, string $titulo, string $ruta): 
   <div class="d-flex justify-content-between align-items-center mb-3"><h1 class="h4 m-0"><?= e($titulo) ?></h1></div>
   <form class="row g-2 align-items-end mb-3" method="get">
     <input type="hidden" name="r" value="<?= e($ruta) ?>">
-    <?php if ($idPersonal): ?><input type="hidden" name="id_personal" value="<?= $idPersonal ?>"><?php endif; ?>
+    <?php if ($idPersonal): ?><input type="hidden" name="id_usuario" value="<?= $idPersonal ?>"><?php endif; ?>
     <div class="col-md-3"><label class="form-label">Desde</label><input class="form-control" type="date" name="f1" value="<?= e($f1) ?>" required></div>
     <div class="col-md-3"><label class="form-label">Hasta</label><input class="form-control" type="date" name="f2" value="<?= e($f2) ?>" required></div>
     <div class="col-md-2 d-grid"><button class="btn btn-primary">Generar</button></div>
@@ -148,7 +154,7 @@ function __render_reporte_personal(string $tipo, string $titulo, string $ruta): 
       <thead><tr><th>Nombre</th><th class="text-end">Contratos</th><th class="text-end">Movimientos</th><th class="text-end">Total</th></tr></thead>
       <tbody>
       <?php foreach ($summaryRows as $row): ?><tr>
-        <td><a href="?r=<?= e($ruta) ?>&f1=<?= e($f1) ?>&f2=<?= e($f2) ?>&id_personal=<?= (int)$row['id'] ?>"><?= e($row['nombre']) ?></a></td>
+        <td><a href="?r=<?= e($ruta) ?>&f1=<?= e($f1) ?>&f2=<?= e($f2) ?>&id_usuario=<?= (int)$row['id'] ?>"><?= e($row['nombre']) ?></a></td>
         <td class="text-end"><?= count($row['contratos']) ?></td><td class="text-end"><?= (int)$row['movimientos'] ?></td><td class="text-end fw-semibold">$<?= number_format($row['total'],2) ?></td>
       </tr><?php endforeach; ?>
       <?php if (!$summaryRows): ?><tr><td colspan="4" class="text-center text-muted">Sin movimientos en el rango.</td></tr><?php endif; ?>
@@ -272,7 +278,7 @@ case 'cortes_cobradores':
   $periodoCorte = cortes_cobradores_seleccionar_periodo($periodosCorte, trim((string)($_GET['periodo'] ?? '')));
   $totalesCortes = cortes_cobradores_totales_periodos($periodosCorte);
   $totalCorte = $totalesCortes[$periodoCorte['clave']] ?? ['pagos'=>0,'cobradores'=>0,'total'=>0.0];
-  $idCobradorDetalle = (int)($_GET['id_personal'] ?? 0);
+  $idCobradorDetalle = __id_usuario_parametro();
   $resumenCorte = $idCobradorDetalle > 0 ? [] : cortes_cobradores_resumen($periodoCorte);
   $detalleCorte = $idCobradorDetalle > 0 ? cortes_cobradores_movimientos($periodoCorte, $idCobradorDetalle) : [];
   $detalleTotalCorte = array_sum(array_map(fn($row)=>(float)$row['cant_abono'], $detalleCorte));
@@ -346,7 +352,7 @@ case 'cortes_cobradores':
         <tbody>
         <?php foreach ($resumenCorte as $row): ?>
           <tr>
-            <td><a href="?r=pagos.cortes_cobradores&periodo=<?= e($periodoCorte['clave']) ?>&id_personal=<?= (int)$row['id_personal'] ?>"><?= e($row['nombre'] ?: 'Cobrador #'.$row['id_personal']) ?></a></td>
+            <td><a href="?r=pagos.cortes_cobradores&periodo=<?= e($periodoCorte['clave']) ?>&id_usuario=<?= (int)$row['id_usuario'] ?>"><?= e($row['nombre'] ?: 'Cobrador #'.$row['id_usuario']) ?></a></td>
             <td class="text-end"><?= count($row['contratos']) ?></td>
             <td class="text-end"><?= (int)$row['pagos'] ?></td>
             <td class="text-end fw-semibold">$<?= number_format((float)$row['total'],2) ?></td>
@@ -416,15 +422,9 @@ case 'contratos':
             AND (t.nombre LIKE ? OR t.apellido_p LIKE ? OR t.apellido_m LIKE ?)
         )
         OR
-        EXISTS (
-          SELECT 1
-          FROM futuro_contrato_vendedor fcv
-          JOIN futuro_personal fp ON fp.id_personal = fcv.id_personal
-          WHERE fcv.id_contrato = c.id_contrato
-            AND (fp.nombre LIKE ? OR fp.apellido_p LIKE ? OR fp.apellido_m LIKE ?)
-        )
+        EXISTS (SELECT 1 FROM usuarios uv WHERE uv.id=c.id_usuario_vendedor AND uv.nombre LIKE ?)
       )";
-      array_push($params, $like,$like,$like,$like,$like,$like);
+      array_push($params, $like,$like,$like,$like);
     }
   }
 
@@ -451,12 +451,7 @@ case 'contratos':
       ) AS titular,
       /* Vendedor por subconsulta */
       (
-        SELECT CONCAT(fp.nombre,' ',fp.apellido_p,' ',fp.apellido_m)
-        FROM futuro_contrato_vendedor fcv
-        JOIN futuro_personal fp ON fp.id_personal = fcv.id_personal
-        WHERE fcv.id_contrato = c.id_contrato
-        ORDER BY fcv.id_cont_vend DESC
-        LIMIT 1
+        SELECT uv.nombre FROM usuarios uv WHERE uv.id=c.id_usuario_vendedor
       ) AS vendedor,
       /* Promocion congelada; para contratos pendientes usa la relacion mas reciente. */
       (
@@ -625,7 +620,7 @@ case 'nuevo_abono':
     ? date('Y-m-d', strtotime((string)$condicionContrato['fecha_vigencia']))
     : (string)(qone("SELECT DATE(fecha_registro) fecha FROM futuro_abonos WHERE id_abono=?", [(int)$condicionContrato['id_abono_inicial']])['fecha'] ?? date('Y-m-d'));
   $saldo = __saldo_contrato($idc);
-  $cobradores = __get_personal_activo();
+  $cobradores = __get_personal_activo(['cobrador']);
 
   $hist = qall("SELECT a.id_abono, a.cant_abono, DATE(a.fecha_registro) AS fecha,
                        CASE WHEN cp.id_abono_inicial=a.id_abono THEN 1 ELSE 0 END es_inicial,
@@ -655,7 +650,7 @@ case 'nuevo_abono':
               <select name="id_cobrador" class="form-select">
                 <option value="">— Sin cobrador —</option>
                 <?php foreach($cobradores as $c): ?>
-                  <option value="<?= (int)$c['id_personal'] ?>"><?= e($c['nombre']) ?></option>
+                  <option value="<?= (int)$c['id'] ?>"><?= e($c['nombre']) ?></option>
                 <?php endforeach; ?>
               </select>
             </div>
@@ -735,6 +730,13 @@ case 'guardar_abono':
   $fecha = trim($_POST['fecha'] ?? date('Y-m-d'));
   $fechaRegistro = $fecha.' 23:59:59';
   $id_cobr = (int)($_POST['id_cobrador'] ?? 0);
+  if ($id_cobr > 0) {
+    $cobradorSeleccionado = usuarios_directorio_usuario($id_cobr, true);
+    if (!$cobradorSeleccionado || ($cobradorSeleccionado['puesto'] ?? '') !== 'cobrador') {
+      $_SESSION['_alerts'] = "<div class='alert alert-danger'>Selecciona un cobrador activo.</div>";
+      redirect('pagos.nuevo_abono&id_contrato='.$idc);
+    }
+  }
 
   $saldoActual = $idc > 0 ? __saldo_contrato($idc) : null;
   if ($idc<=0 || $monto<=0 || !$saldoActual || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $fecha)) {
@@ -770,7 +772,7 @@ case 'guardar_abono':
     $id_abono = $pdo->lastInsertId();
 
     if ($id_cobr > 0) {
-      q("INSERT INTO futuro_abono_cobrador (id_abono, id_personal, fecha_registro)
+      q("INSERT INTO futuro_abono_cobrador (id_abono,id_usuario,fecha_registro)
          VALUES (?, ?, CURRENT_TIMESTAMP())", [$id_abono, $id_cobr]);
     }
 
@@ -843,16 +845,16 @@ break;
 case 'corte':
   $tipo = trim($_GET['tipo'] ?? 'cobrador');
   if (!in_array($tipo, ['cobrador','vendedor'], true)) $tipo = 'cobrador';
-  $per  = (int)($_GET['id_personal'] ?? 0);
+  $per  = __id_usuario_parametro();
   $f1   = trim($_GET['f1'] ?? date('Y-m-01'));
   $f2   = trim($_GET['f2'] ?? date('Y-m-t'));
 
-  $personas = __get_personal_activo();
+  $personas = __get_personal_activo($tipo === 'cobrador' ? ['cobrador'] : ['vendedor']);
   $rows = [];
   $total = 0.0;
 
   if ($per > 0 && $tipo === 'cobrador') {
-    $where = ["ac.id_personal = ?"];
+    $where = ["ac.id_usuario = ?"];
     $params = [$per];
     if ($f1 !== '') {
       $where[] = "a.fecha_registro >= ?";
@@ -923,10 +925,10 @@ case 'corte':
     </div>
     <div class="col-md-4">
       <label class="form-label">Persona</label>
-      <select name="id_personal" class="form-select" required>
+      <select name="id_usuario" class="form-select" required>
         <option value="0">-- Selecciona persona --</option>
         <?php foreach($personas as $p): ?>
-          <option value="<?= (int)$p['id_personal'] ?>" <?= $per===(int)$p['id_personal']?'selected':'' ?>>
+          <option value="<?= (int)$p['id'] ?>" <?= $per===(int)$p['id']?'selected':'' ?>>
             <?= e($p['nombre']) ?>
           </option>
         <?php endforeach; ?>
@@ -1246,12 +1248,11 @@ case 'reporte_cobradores':
   if ($f1 > $f2) {
     [$f1, $f2] = [$f2, $f1];
   }
-  $id_personal = (int)($_GET['id_personal'] ?? 0);
+  $id_personal = __id_usuario_parametro();
 
   $rows = qall("
     SELECT a.id_abono, a.id_contrato, a.fecha_registro, a.cant_abono,
-           ac.id_personal AS id_cobrador,
-           TRIM(CONCAT(COALESCE(fp.nombre,''),' ',COALESCE(fp.apellido_p,''),' ',COALESCE(fp.apellido_m,''))) AS nombre_cobrador,
+           ac.id_usuario AS id_cobrador,u.nombre AS nombre_cobrador,
            (
              SELECT CONCAT(t.nombre,' ',t.apellido_p,' ',t.apellido_m)
              FROM titular_contrato tc
@@ -1269,7 +1270,7 @@ case 'reporte_cobradores':
         ORDER BY ac2.id_abono_cobrador DESC
         LIMIT 1
       )
-    LEFT JOIN futuro_personal fp ON fp.id_personal = ac.id_personal
+    JOIN usuarios u ON u.id=ac.id_usuario
     WHERE a.fecha_registro >= ? AND a.fecha_registro <= ?
     ORDER BY a.fecha_registro DESC, a.id_abono DESC
     LIMIT 10000
@@ -1299,7 +1300,7 @@ case 'reporte_cobradores':
     if ($idCobrador <= 0) continue;
     if (!isset($resumen[$idCobrador])) {
       $resumen[$idCobrador] = [
-        'id_personal' => $idCobrador,
+        'id_usuario' => $idCobrador,
         'nombre' => trim((string)($row['nombre_cobrador'] ?? '')),
         'total' => 0.0,
         'pagos' => 0,
@@ -1335,7 +1336,7 @@ case 'reporte_cobradores':
 	      <form class="row g-2 align-items-end" method="get">
 	        <input type="hidden" name="r" value="pagos.reporte_cobradores">
 	        <?php if ($id_personal > 0): ?>
-	          <input type="hidden" name="id_personal" value="<?= (int)$id_personal ?>">
+          <input type="hidden" name="id_usuario" value="<?= (int)$id_personal ?>">
 	        <?php endif; ?>
 	        <div class="col-md-3">
 	          <label class="form-label">Desde</label>
@@ -1382,8 +1383,8 @@ case 'reporte_cobradores':
 	          <?php foreach ($resumen_rows as $row): ?>
 	          <tr>
 	            <td>
-	              <a href="?r=pagos.reporte_cobradores&f1=<?= e(urlencode($f1)) ?>&f2=<?= e(urlencode($f2)) ?>&id_personal=<?= (int)$row['id_personal'] ?>">
-	                <?= e($row['nombre'] ?: 'Cobrador #'.(int)$row['id_personal']) ?>
+              <a href="?r=pagos.reporte_cobradores&f1=<?= e(urlencode($f1)) ?>&f2=<?= e(urlencode($f2)) ?>&id_usuario=<?= (int)$row['id_usuario'] ?>">
+                <?= e($row['nombre'] ?: 'Cobrador #'.(int)$row['id_usuario']) ?>
 	              </a>
 	            </td>
 	            <td class="text-end"><?= (int)$row['pagos'] ?></td>
@@ -1455,7 +1456,7 @@ break;
  * =======================================================*/
 case 'comisiones':
   $idc = (int)($_GET['id_contrato'] ?? 0);
-  $vendedores = __get_personal_activo();
+  $vendedores = __get_personal_activo(['vendedor']);
 
   $info = null; $saldo=null;
   if ($idc>0) {
@@ -1487,7 +1488,7 @@ case 'comisiones':
             <select name="id_vendedor" class="form-select" required>
               <option value="">— Selecciona vendedor —</option>
               <?php foreach($vendedores as $v): ?>
-                <option value="<?= (int)$v['id_personal'] ?>"><?= e($v['nombre']) ?></option>
+                <option value="<?= (int)$v['id'] ?>"><?= e($v['nombre']) ?></option>
               <?php endforeach; ?>
             </select>
           </div>
@@ -1688,11 +1689,16 @@ case 'guardar_comision':
     $_SESSION['_alerts'] = "<div class='alert alert-danger'>Contrato y vendedor son obligatorios.</div>";
     redirect('pagos.comisiones&id_contrato='.$idc);
   }
+  $vendedor = usuarios_directorio_usuario($idv, true);
+  if (!$vendedor || ($vendedor['puesto'] ?? '') !== 'vendedor') {
+    $_SESSION['_alerts'] = "<div class='alert alert-danger'>Selecciona un vendedor activo.</div>";
+    redirect('pagos.comisiones&id_contrato='.$idc);
+  }
 
   $final = max(0, $monto - $desc);
 
   q("INSERT INTO futuro_comision_semanal
-     (id_abono, id_contrato, estatus, cant_comision, saldo_comision, descuento, cant_com_final, comisionista, id_comisionista, fecha_registro)
+     (id_abono,id_contrato,estatus,cant_comision,saldo_comision,descuento,cant_com_final,comisionista,id_usuario_comisionista,fecha_registro)
      VALUES (0, ?, ?, ?, 0, ?, ?, 'vendedor', ?, ?)",
      [$idc, $estatus, $monto, $desc, $final, $idv, $fecha]);
 

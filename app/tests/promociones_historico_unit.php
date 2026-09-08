@@ -21,9 +21,9 @@ $condicion = [
   'comision_vendedor_posterior'=>'1000.00',
   'comision_lider'=>'100.00',
   'comision_gerente'=>'200.00',
-  'id_vendedor'=>10,
-  'id_lider'=>20,
-  'id_gerente'=>30,
+  'id_usuario_vendedor'=>10,
+  'id_usuario_lider'=>20,
+  'id_usuario_gerente'=>30,
 ];
 
 $inicial = futuros_promociones_segmentos($condicion, 0, 30000);

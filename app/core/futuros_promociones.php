@@ -1,6 +1,8 @@
 <?php
 // Reglas economicas, condiciones congeladas y distribucion de pagos de futuros.
 
+require_once __DIR__.'/usuarios_directorio.php';
+
 function futuros_promociones_ensure_schema(bool $force = false): void {
   static $ready = false;
   if ($ready && !$force) return;
@@ -17,10 +19,10 @@ function futuros_promociones_ensure_schema(bool $force = false): void {
       'id_condicion', 'id_contrato', 'id_mos_cat_com', 'id_regla_origen',
       'pago_inicial', 'gasto_administrativo', 'comision_vendedor_inicial',
       'comision_vendedor_posterior', 'comision_lider', 'comision_gerente',
-      'id_vendedor', 'id_lider', 'id_gerente', 'id_abono_corte', 'id_abono_inicial',
+      'id_usuario_vendedor', 'id_usuario_lider', 'id_usuario_gerente', 'id_abono_corte', 'id_abono_inicial',
     ],
     'futuro_abono_distribucion' => [
-      'id_distribucion', 'id_abono', 'id_contrato', 'tipo', 'etapa', 'id_personal', 'monto',
+      'id_distribucion', 'id_abono', 'id_contrato', 'tipo', 'etapa', 'id_usuario', 'monto',
     ],
   ];
 
@@ -48,8 +50,11 @@ function futuros_promociones_ensure_schema(bool $force = false): void {
   }
 
   if ($missing) {
+    $migration = array_filter($missing, fn($item)=>str_contains($item,'id_usuario'))
+      ? '2026_08_usuarios_directorio_etapa2.sql'
+      : '2026_08_promociones_planes_pagos.sql';
     throw new RuntimeException(
-      'Falta ejecutar la migracion 2026_08_promociones_planes_pagos.sql. Elementos pendientes: '.implode(', ', $missing)
+      'Falta ejecutar la migracion '.$migration.'. Elementos pendientes: '.implode(', ', $missing)
     );
   }
   $ready = true;
@@ -190,29 +195,12 @@ function futuros_promociones_guardar_regla(int $idPromocion, array $regla): arra
 }
 
 function futuros_promociones_jerarquia(int $idVendedor, array $regla): array {
-  $errores = [];
-  $vendedor = qone("SELECT id_personal,jefe_directo FROM futuro_personal WHERE id_personal=?", [$idVendedor]);
-  if (!$vendedor) return ['id_vendedor'=>$idVendedor,'id_lider'=>null,'id_gerente'=>null,'errores'=>['El vendedor seleccionado no existe.']];
-
-  $idLider = (int)($vendedor['jefe_directo'] ?? 0);
-  $lider = $idLider > 0 ? qone("SELECT id_personal,jefe_directo FROM futuro_personal WHERE id_personal=?", [$idLider]) : null;
-  $idGerente = (int)($lider['jefe_directo'] ?? 0);
-  $gerente = $idGerente > 0 ? qone("SELECT id_personal FROM futuro_personal WHERE id_personal=?", [$idGerente]) : null;
-
-  if (futuros_promociones_db_cents($regla['comision_lider'] ?? 0) > 0 && !$lider) {
-    $errores[] = 'El vendedor no tiene lider configurado como jefe directo.';
-  }
-  if (futuros_promociones_db_cents($regla['comision_gerente'] ?? 0) > 0 && !$gerente) {
-    $errores[] = 'El lider no tiene gerente configurado como jefe directo.';
-  }
-  if ($idVendedor === $idLider || $idVendedor === $idGerente || ($idLider > 0 && $idLider === $idGerente)) {
-    $errores[] = 'La jerarquia del vendedor contiene una relacion circular.';
-  }
+  $jerarquia = usuarios_directorio_jerarquia_comercial($idVendedor);
   return [
-    'id_vendedor'=>$idVendedor,
-    'id_lider'=>$lider ? $idLider : null,
-    'id_gerente'=>$gerente ? $idGerente : null,
-    'errores'=>$errores,
+    'id_vendedor'=>$jerarquia['id_vendedor'],
+    'id_lider'=>$jerarquia['id_lider'],
+    'id_gerente'=>$jerarquia['id_gerente'],
+    'errores'=>$jerarquia['errores'],
   ];
 }
 
@@ -234,22 +222,17 @@ function futuros_promociones_crear_condicion(
   q("INSERT INTO futuro_contrato_promocion_condiciones
     (id_contrato,id_mos_cat_com,id_regla_origen,pago_inicial,gasto_administrativo,
      comision_vendedor_inicial,comision_vendedor_posterior,comision_lider,comision_gerente,
-     id_vendedor,id_lider,id_gerente,id_abono_corte,es_migrado,fecha_vigencia)
+     id_usuario_vendedor,id_usuario_lider,id_usuario_gerente,id_abono_corte,es_migrado,fecha_vigencia)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)", [
       $idContrato,$idPromocion,(int)$regla['id_regla'],$regla['pago_inicial'],$regla['gasto_administrativo'],
       $regla['comision_vendedor_inicial'],$regla['comision_vendedor_posterior'],$regla['comision_lider'],$regla['comision_gerente'],
       $jerarquia['id_vendedor'],$jerarquia['id_lider'],$jerarquia['id_gerente'],$idAbonoCorte,$migrado ? 1 : 0,
     ]);
   $idCondicion = (int)db()->lastInsertId();
-  futuros_promociones_guardar_relacion_personal('futuro_contrato_lider', 'id_cont_lider', $idContrato, (int)($jerarquia['id_lider'] ?? 0));
-  futuros_promociones_guardar_relacion_personal('futuro_contrato_jefecuad', 'id_cont_jefecuad', $idContrato, (int)($jerarquia['id_gerente'] ?? 0));
+  q("UPDATE futuro_contratos SET id_usuario_vendedor=?,id_usuario_lider=?,id_usuario_gerente=? WHERE id_contrato=?", [
+    $jerarquia['id_vendedor'],$jerarquia['id_lider'],$jerarquia['id_gerente'],$idContrato,
+  ]);
   return $idCondicion;
-}
-
-function futuros_promociones_guardar_relacion_personal(string $table, string $idColumn, int $idContrato, int $idPersonal): void {
-  if ($idPersonal <= 0 || !preg_match('/^[a-z0-9_]+$/', $table.$idColumn)) return;
-  $exists = qone("SELECT {$idColumn} AS id FROM {$table} WHERE id_contrato=? AND id_personal=? ORDER BY {$idColumn} DESC LIMIT 1", [$idContrato,$idPersonal]);
-  if (!$exists) q("INSERT INTO {$table} (id_contrato,id_personal) VALUES (?,?)", [$idContrato,$idPersonal]);
 }
 
 function futuros_promociones_condicion_contrato(int $idContrato): ?array {
@@ -259,11 +242,11 @@ function futuros_promociones_condicion_contrato(int $idContrato): ?array {
 function futuros_promociones_segmentos(array $condicion, int $totalAntes, int $monto): array {
   if ($monto <= 0) return [];
   $buckets = [
-    ['tipo'=>'gasto_administrativo','etapa'=>'inicial','id_personal'=>null,'monto'=>futuros_promociones_db_cents($condicion['gasto_administrativo'] ?? 0)],
-    ['tipo'=>'vendedor','etapa'=>'inicial','id_personal'=>(int)($condicion['id_vendedor'] ?? 0),'monto'=>futuros_promociones_db_cents($condicion['comision_vendedor_inicial'] ?? 0)],
-    ['tipo'=>'vendedor','etapa'=>'posterior','id_personal'=>(int)($condicion['id_vendedor'] ?? 0),'monto'=>futuros_promociones_db_cents($condicion['comision_vendedor_posterior'] ?? 0)],
-    ['tipo'=>'lider','etapa'=>'posterior','id_personal'=>(int)($condicion['id_lider'] ?? 0),'monto'=>futuros_promociones_db_cents($condicion['comision_lider'] ?? 0)],
-    ['tipo'=>'gerente','etapa'=>'posterior','id_personal'=>(int)($condicion['id_gerente'] ?? 0),'monto'=>futuros_promociones_db_cents($condicion['comision_gerente'] ?? 0)],
+    ['tipo'=>'gasto_administrativo','etapa'=>'inicial','id_usuario'=>null,'monto'=>futuros_promociones_db_cents($condicion['gasto_administrativo'] ?? 0)],
+    ['tipo'=>'vendedor','etapa'=>'inicial','id_usuario'=>(int)($condicion['id_usuario_vendedor'] ?? 0),'monto'=>futuros_promociones_db_cents($condicion['comision_vendedor_inicial'] ?? 0)],
+    ['tipo'=>'vendedor','etapa'=>'posterior','id_usuario'=>(int)($condicion['id_usuario_vendedor'] ?? 0),'monto'=>futuros_promociones_db_cents($condicion['comision_vendedor_posterior'] ?? 0)],
+    ['tipo'=>'lider','etapa'=>'posterior','id_usuario'=>(int)($condicion['id_usuario_lider'] ?? 0),'monto'=>futuros_promociones_db_cents($condicion['comision_lider'] ?? 0)],
+    ['tipo'=>'gerente','etapa'=>'posterior','id_usuario'=>(int)($condicion['id_usuario_gerente'] ?? 0),'monto'=>futuros_promociones_db_cents($condicion['comision_gerente'] ?? 0)],
   ];
   $inicioPago = $totalAntes;
   $finPago = $totalAntes + $monto;
@@ -280,7 +263,7 @@ function futuros_promociones_segmentos(array $condicion, int $totalAntes, int $m
   }
   if ($finPago > $umbral) {
     $empresa = $finPago - max($inicioPago, $umbral);
-    if ($empresa > 0) $segmentos[] = ['tipo'=>'empresa','etapa'=>'posterior','id_personal'=>null,'monto'=>$empresa];
+    if ($empresa > 0) $segmentos[] = ['tipo'=>'empresa','etapa'=>'posterior','id_usuario'=>null,'monto'=>$empresa];
   }
   return $segmentos;
 }
@@ -296,9 +279,9 @@ function futuros_promociones_reconstruir_distribuciones(int $idContrato): void {
     $monto = futuros_promociones_db_cents($abono['cant_abono'] ?? 0);
     if ((int)$abono['id_abono'] > $corte) {
       foreach (futuros_promociones_segmentos($condicion, $totalAntes, $monto) as $segmento) {
-        q("INSERT INTO futuro_abono_distribucion (id_abono,id_contrato,tipo,etapa,id_personal,monto) VALUES (?,?,?,?,?,?)", [
+        q("INSERT INTO futuro_abono_distribucion (id_abono,id_contrato,tipo,etapa,id_usuario,monto) VALUES (?,?,?,?,?,?)", [
           (int)$abono['id_abono'],$idContrato,$segmento['tipo'],$segmento['etapa'],
-          $segmento['id_personal'] ?: null,futuros_promociones_cents_to_decimal($segmento['monto']),
+          $segmento['id_usuario'] ?: null,futuros_promociones_cents_to_decimal($segmento['monto']),
         ]);
       }
     }
@@ -348,7 +331,24 @@ function futuros_promociones_evaluar_contrato_migracion(array $contract): array 
     if (!$promo || !futuros_promociones_regla_configurada($rule)) {
       return ['item'=>null, 'error'=>'promocion inexistente o sin configuracion valida.'];
     }
-    $hierarchy = futuros_promociones_jerarquia((int)$contract['id_vendedor'], $rule);
+    $idVendedor = (int)($contract['id_vendedor'] ?? 0);
+    $idLider = (int)($contract['id_lider'] ?? 0);
+    $idGerente = (int)($contract['id_gerente'] ?? 0);
+    if ($idVendedor > 0 && $idLider > 0 && $idGerente > 0) {
+      $hierarchy = [
+        'id_vendedor'=>$idVendedor,'id_lider'=>$idLider,'id_gerente'=>$idGerente,
+        'errores'=>[],
+      ];
+      foreach ([$idVendedor,$idLider,$idGerente] as $idUsuario) {
+        $usuario = usuarios_directorio_usuario($idUsuario);
+        if (!$usuario) {
+          $hierarchy['errores'][] = 'La jerarquia congelada del contrato no tiene usuarios validos.';
+          break;
+        }
+      }
+    } else {
+      $hierarchy = futuros_promociones_jerarquia($idVendedor, $rule);
+    }
     if ($hierarchy['errores']) {
       return ['item'=>null, 'error'=>implode(' ', $hierarchy['errores'])];
     }
@@ -367,7 +367,7 @@ function futuros_promociones_migracion_estado(): array {
   futuros_promociones_ensure_schema();
   $contracts = qall("
     SELECT c.id_contrato,c.costo_final,
-      (SELECT cv.id_personal FROM futuro_contrato_vendedor cv WHERE cv.id_contrato=c.id_contrato ORDER BY cv.id_cont_vend DESC LIMIT 1) id_vendedor,
+      c.id_usuario_vendedor id_vendedor,c.id_usuario_lider id_lider,c.id_usuario_gerente id_gerente,
       (SELECT cc.id_mos_cat_com FROM futuro_cont_cat_com cc WHERE cc.id_contrato=c.id_contrato ORDER BY cc.id_cont_cat_com DESC LIMIT 1) id_promocion
     FROM futuro_contratos c
     LEFT JOIN futuro_contrato_promocion_condiciones cp ON cp.id_contrato=c.id_contrato
@@ -424,7 +424,7 @@ function futuros_promociones_migrar_contrato_vigente(int $idContrato): array {
   }
   $contract = qone("
     SELECT c.id_contrato,c.costo_final,
-      (SELECT cv.id_personal FROM futuro_contrato_vendedor cv WHERE cv.id_contrato=c.id_contrato ORDER BY cv.id_cont_vend DESC LIMIT 1) id_vendedor,
+      c.id_usuario_vendedor id_vendedor,c.id_usuario_lider id_lider,c.id_usuario_gerente id_gerente,
       (SELECT cc.id_mos_cat_com FROM futuro_cont_cat_com cc WHERE cc.id_contrato=c.id_contrato ORDER BY cc.id_cont_cat_com DESC LIMIT 1) id_promocion
     FROM futuro_contratos c
     WHERE c.id_contrato=? AND UPPER(c.estatus)='ACTIVO'
@@ -473,16 +473,14 @@ function futuros_promociones_resolver_para_reporte(int $idPromocion, array $cata
 
 function futuros_promociones_personal_para_reportes(): array {
   $personal = [];
-  foreach (qall("SELECT id_personal,jefe_directo,nombre,apellido_p,apellido_m FROM futuro_personal") as $row) {
-    $idPersonal = (int)$row['id_personal'];
-    $personal[$idPersonal] = [
-      'id_personal'=>$idPersonal,
-      'jefe_directo'=>(int)($row['jefe_directo'] ?? 0),
-      'nombre'=>trim(implode(' ', array_filter([
-        trim((string)($row['nombre'] ?? '')),
-        trim((string)($row['apellido_p'] ?? '')),
-        trim((string)($row['apellido_m'] ?? '')),
-      ], fn($parte) => $parte !== ''))),
+  foreach (qall("SELECT id,jefe_directo_id,nombre,puesto,estatus FROM usuarios") as $row) {
+    $idUsuario = (int)$row['id'];
+    $personal[$idUsuario] = [
+      'id_usuario'=>$idUsuario,
+      'jefe_directo'=>(int)($row['jefe_directo_id'] ?? 0),
+      'nombre'=>trim((string)($row['nombre'] ?? '')),
+      'puesto'=>$row['puesto'] ?? null,
+      'estatus'=>$row['estatus'] ?? null,
     ];
   }
   return $personal;
@@ -499,9 +497,9 @@ function futuros_promociones_condicion_virtual(array $row, array $catalogo, arra
       'comision_vendedor_posterior'=>$row['condicion_vendedor_posterior'],
       'comision_lider'=>$row['condicion_lider'],
       'comision_gerente'=>$row['condicion_gerente'],
-      'id_vendedor'=>(int)$row['condicion_id_vendedor'],
-      'id_lider'=>(int)($row['condicion_id_lider'] ?? 0),
-      'id_gerente'=>(int)($row['condicion_id_gerente'] ?? 0),
+      'id_usuario_vendedor'=>(int)$row['condicion_id_vendedor'],
+      'id_usuario_lider'=>(int)($row['condicion_id_lider'] ?? 0),
+      'id_usuario_gerente'=>(int)($row['condicion_id_gerente'] ?? 0),
       'promocion'=>$catalogo['por_id'][$idPromocion] ?? null,
     ];
   }
@@ -510,8 +508,8 @@ function futuros_promociones_condicion_virtual(array $row, array $catalogo, arra
   $idVendedor = (int)($row['id_vendedor_actual'] ?? 0);
   if (!$promocion || $idVendedor <= 0 || empty($personal[$idVendedor])) return null;
 
-  $idLider = (int)($personal[$idVendedor]['jefe_directo'] ?? 0);
-  $idGerente = (int)($personal[$idLider]['jefe_directo'] ?? 0);
+  $idLider = (int)($row['id_lider_actual'] ?? 0);
+  $idGerente = (int)($row['id_gerente_actual'] ?? 0);
   $requiereLider = futuros_promociones_db_cents($promocion['comision_lider'] ?? 0) > 0;
   $requiereGerente = futuros_promociones_db_cents($promocion['comision_gerente'] ?? 0) > 0;
   if ($requiereLider && empty($personal[$idLider])) return null;
@@ -519,9 +517,9 @@ function futuros_promociones_condicion_virtual(array $row, array $catalogo, arra
   if ($idVendedor === $idLider || $idVendedor === $idGerente || ($idLider > 0 && $idLider === $idGerente)) return null;
 
   return array_merge($promocion, [
-    'id_vendedor'=>$idVendedor,
-    'id_lider'=>$idLider ?: null,
-    'id_gerente'=>$idGerente ?: null,
+    'id_usuario_vendedor'=>$idVendedor,
+    'id_usuario_lider'=>$idLider ?: null,
+    'id_usuario_gerente'=>$idGerente ?: null,
     'promocion'=>$promocion,
   ]);
 }
@@ -572,12 +570,12 @@ function futuros_promociones_pagos_resueltos(?string $fechaInicio, ?string $fech
            cp.comision_vendedor_inicial condicion_vendedor_inicial,
            cp.comision_vendedor_posterior condicion_vendedor_posterior,
            cp.comision_lider condicion_lider,cp.comision_gerente condicion_gerente,
-           cp.id_vendedor condicion_id_vendedor,cp.id_lider condicion_id_lider,
-           cp.id_gerente condicion_id_gerente,
+           cp.id_usuario_vendedor condicion_id_vendedor,cp.id_usuario_lider condicion_id_lider,
+           cp.id_usuario_gerente condicion_id_gerente,
            (SELECT cc.id_mos_cat_com FROM futuro_cont_cat_com cc WHERE cc.id_contrato=a.id_contrato ORDER BY cc.id_cont_cat_com DESC LIMIT 1) id_promocion_actual,
-           (SELECT cv.id_personal FROM futuro_contrato_vendedor cv WHERE cv.id_contrato=a.id_contrato ORDER BY cv.id_cont_vend DESC LIMIT 1) id_vendedor_actual,
+           c.id_usuario_vendedor id_vendedor_actual,c.id_usuario_lider id_lider_actual,c.id_usuario_gerente id_gerente_actual,
            (SELECT CONCAT(t.nombre,' ',t.apellido_p,' ',t.apellido_m) FROM titular_contrato tc JOIN titulares t ON t.id_titular=tc.id_titular WHERE tc.id_contrato=a.id_contrato ORDER BY tc.id_titular_contrato DESC LIMIT 1) titular,
-           (SELECT ac.id_personal FROM futuro_abono_cobrador ac WHERE ac.id_abono=a.id_abono ORDER BY ac.id_abono_cobrador DESC LIMIT 1) id_cobrador
+           (SELECT ac.id_usuario FROM futuro_abono_cobrador ac WHERE ac.id_abono=a.id_abono ORDER BY ac.id_abono_cobrador DESC LIMIT 1) id_cobrador
     FROM futuro_abonos a
     JOIN futuro_contratos c ON c.id_contrato=a.id_contrato
     LEFT JOIN futuro_contrato_promocion_condiciones cp ON cp.id_contrato=a.id_contrato
@@ -615,7 +613,7 @@ function futuros_promociones_pagos_resueltos(?string $fechaInicio, ?string $fech
     $idCobrador = (int)($abono['id_cobrador'] ?? 0);
     foreach (futuros_promociones_segmentos($condicion, $totalAntes, $monto) as $orden => $segmento) {
       $tipo = (string)$segmento['tipo'];
-      $idBeneficiario = (int)($segmento['id_personal'] ?? 0);
+      $idBeneficiario = (int)($segmento['id_usuario'] ?? 0);
       $nombreBeneficiario = $idBeneficiario > 0 ? (string)($personal[$idBeneficiario]['nombre'] ?? '') : '';
       if ($tipo === 'empresa') $nombreBeneficiario = 'Empresa';
       if ($tipo === 'gasto_administrativo') $nombreBeneficiario = 'Administrativo / papeleria';

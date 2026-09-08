@@ -127,8 +127,8 @@ function servicios_validate_form_data(array $data): ?string {
 
 function servicios_render_form(string $title, string $actionUrl, array $values, bool $isEdit = false, array $svc = []): void {
   $contratos = so_contratos_futuros_options();
-  $vendedores = so_user_options(['administradora','vendedor']);
-  $auxiliares = so_user_options(['administradora','auxiliar','coordinador']);
+  $vendedores = so_user_options(['vendedor']);
+  $auxiliares = so_user_options(['auxiliar']);
   $totales = !empty($svc['id_servicio']) ? so_servicio_totales((int)$svc['id_servicio']) : ['pagado' => 0, 'saldo' => 0];
 
   ob_start(); ?>

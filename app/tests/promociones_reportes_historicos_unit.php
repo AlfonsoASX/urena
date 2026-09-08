@@ -11,8 +11,8 @@ function qall($sql, $params = []): array {
       'futuro_mostrar_catalogo_promociones'=>['id_mos_cat_com','codigo','concepto','estatus'],
       'futuro_cont_cat_com'=>['id_contrato','id_mos_cat_com'],
       'futuro_promocion_reglas'=>['id_regla','id_mos_cat_com','pago_inicial','gasto_administrativo','comision_vendedor_inicial','comision_vendedor_posterior','comision_lider','comision_gerente','activo'],
-      'futuro_contrato_promocion_condiciones'=>['id_condicion','id_contrato','id_mos_cat_com','id_regla_origen','pago_inicial','gasto_administrativo','comision_vendedor_inicial','comision_vendedor_posterior','comision_lider','comision_gerente','id_vendedor','id_lider','id_gerente','id_abono_corte','id_abono_inicial'],
-      'futuro_abono_distribucion'=>['id_distribucion','id_abono','id_contrato','tipo','etapa','id_personal','monto'],
+      'futuro_contrato_promocion_condiciones'=>['id_condicion','id_contrato','id_mos_cat_com','id_regla_origen','pago_inicial','gasto_administrativo','comision_vendedor_inicial','comision_vendedor_posterior','comision_lider','comision_gerente','id_usuario_vendedor','id_usuario_lider','id_usuario_gerente','id_abono_corte','id_abono_inicial'],
+      'futuro_abono_distribucion'=>['id_distribucion','id_abono','id_contrato','tipo','etapa','id_usuario','monto'],
     ];
     $rows = [];
     foreach ($required as $table=>$columns) {
@@ -42,16 +42,16 @@ function qall($sql, $params = []): array {
       'condicion_vendedor_inicial'=>null,'condicion_vendedor_posterior'=>null,
       'condicion_lider'=>null,'condicion_gerente'=>null,'condicion_id_vendedor'=>null,
       'condicion_id_lider'=>null,'condicion_id_gerente'=>null,'id_promocion_actual'=>1,
-      'id_vendedor_actual'=>10,'titular'=>'Titular Prueba','id_cobrador'=>40,
+      'id_vendedor_actual'=>10,'id_lider_actual'=>20,'id_gerente_actual'=>30,'titular'=>'Titular Prueba','id_cobrador'=>40,
     ]];
   }
 
-  if (str_contains($sql, 'SELECT id_personal,jefe_directo,nombre')) {
+  if (str_contains($sql, 'SELECT id,jefe_directo_id,nombre')) {
     return [
-      ['id_personal'=>10,'jefe_directo'=>20,'nombre'=>'Vendedor','apellido_p'=>'Prueba','apellido_m'=>''],
-      ['id_personal'=>20,'jefe_directo'=>30,'nombre'=>'Lider','apellido_p'=>'Prueba','apellido_m'=>''],
-      ['id_personal'=>30,'jefe_directo'=>0,'nombre'=>'Gerente','apellido_p'=>'Prueba','apellido_m'=>''],
-      ['id_personal'=>40,'jefe_directo'=>0,'nombre'=>'Cobrador','apellido_p'=>'Prueba','apellido_m'=>''],
+      ['id'=>10,'jefe_directo_id'=>20,'nombre'=>'Vendedor Prueba','puesto'=>'vendedor','estatus'=>'ACTIVO'],
+      ['id'=>20,'jefe_directo_id'=>30,'nombre'=>'Lider Prueba','puesto'=>'lider','estatus'=>'ACTIVO'],
+      ['id'=>30,'jefe_directo_id'=>0,'nombre'=>'Gerente Prueba','puesto'=>'gerente','estatus'=>'ACTIVO'],
+      ['id'=>40,'jefe_directo_id'=>0,'nombre'=>'Cobrador Prueba','puesto'=>'cobrador','estatus'=>'ACTIVO'],
     ];
   }
 

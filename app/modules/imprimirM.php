@@ -50,7 +50,7 @@ $sql = "
         a.id_abono, a.fecha_registro, a.cant_abono,
         c.id_contrato, c.estatus, c.tipo_contrato, c.costo_final,
         t.titular,
-        CONCAT(p.nombre, ' ', p.apellido_p) AS nombre_cobrador,
+        p.nombre AS nombre_cobrador,
         GREATEST(
           c.costo_final - COALESCE((
             SELECT SUM(a2.cant_abono)
@@ -63,8 +63,8 @@ $sql = "
     FROM futuro_abonos a
     INNER JOIN futuro_contratos c ON c.id_contrato = a.id_contrato
     LEFT JOIN vw_titular_contrato t ON t.id_contrato = c.id_contrato
-    LEFT JOIN futuro_abono_cobrador fac ON fac.id_abono = a.id_abono
-    LEFT JOIN futuro_personal p ON p.id_personal = fac.id_personal
+    LEFT JOIN futuro_abono_cobrador fac ON fac.id_abono_cobrador=(SELECT MAX(x.id_abono_cobrador) FROM futuro_abono_cobrador x WHERE x.id_abono=a.id_abono)
+    LEFT JOIN usuarios p ON p.id=fac.id_usuario
     WHERE a.id_abono = ?
     LIMIT 1
 ";

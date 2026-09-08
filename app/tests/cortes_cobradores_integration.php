@@ -39,12 +39,12 @@ try {
   ];
   require_once __DIR__.'/../core/db.php';
 
-  q("CREATE TABLE futuro_personal (id_personal INT PRIMARY KEY,nombre VARCHAR(80),apellido_p VARCHAR(80),apellido_m VARCHAR(80)) ENGINE=InnoDB");
+  q("CREATE TABLE usuarios (id INT PRIMARY KEY,nombre VARCHAR(160),puesto VARCHAR(60),estatus VARCHAR(10)) ENGINE=InnoDB");
   q("CREATE TABLE titulares (id_titular INT PRIMARY KEY,nombre VARCHAR(80),apellido_p VARCHAR(80),apellido_m VARCHAR(80)) ENGINE=InnoDB");
   q("CREATE TABLE titular_contrato (id_titular_contrato INT AUTO_INCREMENT PRIMARY KEY,id_titular INT,id_contrato INT) ENGINE=InnoDB");
   q("CREATE TABLE futuro_abonos (id_abono INT AUTO_INCREMENT PRIMARY KEY,id_contrato INT NOT NULL,saldo DECIMAL(12,2) NOT NULL DEFAULT 0,cant_abono DECIMAL(12,2) NOT NULL,fecha_registro TIMESTAMP NOT NULL) ENGINE=InnoDB");
-  q("CREATE TABLE futuro_abono_cobrador (id_abono_cobrador INT AUTO_INCREMENT PRIMARY KEY,id_abono INT NOT NULL,id_personal INT NOT NULL,fecha_registro TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP) ENGINE=InnoDB");
-  q("INSERT INTO futuro_personal VALUES (1,'Ana','Corte',''),(2,'Luis','Ruta','')");
+  q("CREATE TABLE futuro_abono_cobrador (id_abono_cobrador INT AUTO_INCREMENT PRIMARY KEY,id_abono INT NOT NULL,id_usuario INT NOT NULL,fecha_registro TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP) ENGINE=InnoDB");
+  q("INSERT INTO usuarios VALUES (1,'Ana Corte','cobrador','ACTIVO'),(2,'Luis Ruta','cobrador','ACTIVO')");
   q("INSERT INTO titulares VALUES (1,'Cliente','Prueba','')");
   q("INSERT INTO titular_contrato (id_titular,id_contrato) VALUES (1,10),(1,20),(1,30),(1,40),(1,50)");
 
@@ -54,12 +54,12 @@ try {
      (30,999,'2026-09-04 18:00:00'),
      (40,1,'2026-08-28 17:59:59'),
      (50,25,'2026-08-30 10:00:00')");
-  q("INSERT INTO futuro_abono_cobrador (id_abono,id_personal) VALUES (1,1),(2,1),(2,2),(3,1),(4,1),(5,2)");
+  q("INSERT INTO futuro_abono_cobrador (id_abono,id_usuario) VALUES (1,1),(2,1),(2,2),(3,1),(4,1),(5,2)");
 
   $selected = cortes_cobradores_periodo_actual($config, new DateTimeImmutable('2026-08-30 12:00:00', $tz));
   $summary = cortes_cobradores_resumen($selected);
   $byId = [];
-  foreach ($summary as $row) $byId[(int)$row['id_personal']] = $row;
+  foreach ($summary as $row) $byId[(int)$row['id_usuario']] = $row;
   cut_assert(count($summary) === 2, 'Deben aparecer dos cobradores.');
   cut_assert(abs((float)$byId[1]['total'] - 100.0) < 0.001, 'El total del primer cobrador es incorrecto.');
   cut_assert(abs((float)$byId[2]['total'] - 75.0) < 0.001, 'La ultima relacion debe definir al cobrador.');

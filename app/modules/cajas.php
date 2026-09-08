@@ -31,6 +31,13 @@ function caja_find($codigo) {
   return qone("SELECT * FROM cajas WHERE codigo=? AND COALESCE(eliminado,0)=0", [$codigo]);
 }
 
+function caja_material_options(bool $includeAll = false, bool $includePrompt = false): array {
+  $options = inventario_caja_materiales();
+  if ($includeAll) return ['todos' => 'Todos'] + $options;
+  if ($includePrompt) return ['' => 'Selecciona el material'] + $options;
+  return $options;
+}
+
 function cajas_uso_expr(string $alias = 'c'): string {
   if (db_column_exists('cajas', 'veces_usado')) {
     return "COALESCE({$alias}.veces_usado,0)";
@@ -87,12 +94,14 @@ function caja_list_return_target(array $state = []): string {
   $estado = trim((string)($state['estado'] ?? 'todos'));
   $rentado = trim((string)($state['rentado'] ?? 'todos'));
   $condicion = trim((string)($state['condicion'] ?? 'todos'));
+  $material = trim((string)($state['material'] ?? 'todos'));
   $idProveedor = (int)($state['id_proveedor'] ?? 0);
   $idAlmacen = (int)($state['id_almacen'] ?? 0);
   if ($q !== '') $query['q'] = $q;
   if ($estado !== '' && $estado !== 'todos') $query['estado'] = $estado;
   if ($rentado !== '' && $rentado !== 'todos') $query['rentado'] = $rentado;
   if ($condicion !== '' && $condicion !== 'todos') $query['condicion'] = $condicion;
+  if ($material !== '' && $material !== 'todos') $query['material'] = $material;
   if ($idProveedor > 0) $query['id_proveedor'] = $idProveedor;
   if ($idAlmacen > 0) $query['id_almacen'] = $idAlmacen;
   return 'cajas.listar'.(!empty($query) ? '&'.http_build_query($query) : '');
@@ -324,6 +333,7 @@ case 'listar':
   $proveedor = (int)($_GET['id_proveedor'] ?? 0);
   $almacen = (int)($_GET['id_almacen'] ?? 0);
   $condicion = trim($_GET['condicion'] ?? 'todos');
+  $material = trim($_GET['material'] ?? 'todos');
 
   $where = ['COALESCE(c.eliminado,0)=0'];
   $params = [];
@@ -331,8 +341,8 @@ case 'listar':
 
   if ($q !== '') {
     $like = '%'.$q.'%';
-    $where[] = "(c.codigo LIKE ? OR c.modelo LIKE ? OR c.color LIKE ? OR c.ubicacion LIKE ? OR c.proveedor LIKE ?)";
-    array_push($params, $like, $like, $like, $like, $like);
+    $where[] = "(c.codigo LIKE ? OR c.modelo LIKE ? OR c.material LIKE ? OR c.color LIKE ? OR c.ubicacion LIKE ? OR c.proveedor LIKE ?)";
+    array_push($params, $like, $like, $like, $like, $like, $like);
   }
   if ($estado !== '' && $estado !== 'todos') {
     $where[] = "c.estado = ?";
@@ -356,9 +366,14 @@ case 'listar':
   } elseif ($condicion === 'usados') {
     $where[] = "(COALESCE(c.reciclado,0)=1 OR {$usoExpr}>0)";
   }
+  $materialNormalizado = inventario_caja_material_normalizar($material);
+  if ($material !== 'todos' && $materialNormalizado !== null) {
+    $where[] = 'c.material=?';
+    $params[] = $materialNormalizado;
+  }
 
   $rows = qall(
-    "SELECT c.codigo, c.modelo, c.estado, c.ubicacion, c.color,
+    "SELECT c.codigo, c.modelo, c.material, c.estado, c.ubicacion, c.color,
             {$usoExpr} AS veces_usado,
             COALESCE(c.ciclos_uso,0) AS ciclos_uso,
             COALESCE(c.reciclado,0) AS reciclado,
@@ -387,6 +402,7 @@ case 'listar':
     'rentado' => $rentado,
     'id_proveedor' => $proveedor,
     'condicion' => $condicion,
+    'material' => $material,
     'id_almacen' => $almacen,
   ]);
   $nuevosCount = 0;
@@ -423,7 +439,8 @@ case 'listar':
 
   <form class="row g-2 mb-3" method="get">
     <input type="hidden" name="r" value="cajas.listar">
-    <div class="col-md-3"><?= form_input('q', 'Buscar', $q, ['placeholder' => 'Código, modelo, color']) ?></div>
+    <div class="col-md-3"><?= form_input('q', 'Buscar', $q, ['placeholder' => 'Código, modelo, material o color']) ?></div>
+    <div class="col-md-2"><?= form_select('material', 'Material', caja_material_options(true), $material, ['class' => 'form-select']) ?></div>
     <div class="col-md-2"><?= form_select('estado', 'Estado', ['todos' => 'Todos', 'nuevo' => 'Nuevo', 'en_uso' => 'En uso', 'reciclado' => 'Reciclado', 'fuera_uso' => 'Fuera de uso'], $estado, ['class' => 'form-select']) ?></div>
     <div class="col-md-2"><?= form_select('condicion', 'Condición', ['todos' => 'Todos', 'nuevos' => 'Nuevos', 'usados' => 'Usados'], $condicion, ['class' => 'form-select']) ?></div>
     <div class="col-md-2"><?= form_select('rentado', 'Renta', ['todos' => 'Todos', 'si' => 'Rentados', 'no' => 'Venta'], $rentado, ['class' => 'form-select']) ?></div>
@@ -469,6 +486,7 @@ case 'listar':
           <?php endif; ?>
           <th>Código</th>
           <th>Modelo</th>
+          <th>Material</th>
           <th>Estado</th>
           <th>Condición</th>
           <th>Rentado</th>
@@ -502,6 +520,7 @@ case 'listar':
           <?php endif; ?>
           <td><code><?= e($codigo) ?></code></td>
           <td><?= e($r['modelo']) ?></td>
+          <td><?= e(inventario_caja_material_label($r['material'] ?? null)) ?></td>
           <td><span class="badge bg-<?= caja_estado_classes((string)$r['estado']) ?>"><?= e(caja_estado_label((string)$r['estado'])) ?></span></td>
           <td>
             <span class="badge text-bg-<?= $condicionClass ?>"><?= e($condicionLabel) ?></span>
@@ -531,7 +550,7 @@ case 'listar':
         </tr>
         <?php endforeach; ?>
         <?php if (empty($rows)): ?>
-        <tr><td colspan="<?= $canManageCajas ? 11 : 10 ?>" class="text-center text-muted">Sin registros</td></tr>
+        <tr><td colspan="<?= $canManageCajas ? 12 : 11 ?>" class="text-center text-muted">Sin registros</td></tr>
         <?php endif; ?>
       </tbody>
     </table>
@@ -583,6 +602,7 @@ case 'nuevo':
         <?= csrf_field() ?>
         <?= form_input('codigo', 'Código', '', ['required' => true, 'maxlength' => 50]) ?>
         <?= form_input('modelo', 'Modelo', '', ['required' => true]) ?>
+        <?= form_select('material', 'Material', caja_material_options(false, true), '', ['class' => 'form-select', 'required' => true]) ?>
         <?= form_select('estado', 'Estado', ['nuevo' => 'Nuevo', 'en_uso' => 'En uso', 'reciclado' => 'Reciclado', 'fuera_uso' => 'Fuera de uso'], 'nuevo', ['class' => 'form-select']) ?>
         <div class="row g-2">
           <div class="col-md-6"><?= form_select('id_almacen', 'Almacén', $almacen_opts, '', ['class' => 'form-select']) ?></div>
@@ -609,6 +629,7 @@ case 'guardar':
   try { csrf_verify(); } catch (RuntimeException $e) { flash("<div class='alert alert-danger'>Sesión inválida.</div>"); redirect('cajas.nuevo'); }
   $codigo = trim($_POST['codigo'] ?? '');
   $modelo = trim($_POST['modelo'] ?? '');
+  $material = inventario_caja_material_normalizar($_POST['material'] ?? null);
   $estado = trim($_POST['estado'] ?? 'nuevo');
   $color = trim($_POST['color'] ?? '');
   $id_proveedor = (int)($_POST['id_proveedor'] ?? 0) ?: null;
@@ -622,8 +643,8 @@ case 'guardar':
   $costo = (float)($_POST['costo'] ?? 0);
   $es_rentado = (int)($_POST['es_rentado'] ?? 0) ? 1 : 0;
   $notas = trim($_POST['notas'] ?? '');
-  if ($codigo === '' || $modelo === '') {
-    flash("<div class='alert alert-danger'>Código y modelo son obligatorios.</div>");
+  if ($codigo === '' || $modelo === '' || $material === null) {
+    flash("<div class='alert alert-danger'>Código, modelo y material son obligatorios.</div>");
     redirect('cajas.nuevo');
   }
   $pdo = db();
@@ -632,9 +653,9 @@ case 'guardar':
   try {
     $pdo->beginTransaction();
     q(
-      "INSERT INTO cajas (codigo, modelo, estado, ubicacion, color, id_proveedor, id_almacen, costo, es_rentado, reciclado, ciclos_uso, proveedor, notas, eliminado, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, '', ?, 0, CURRENT_TIMESTAMP())",
-      [$codigo, $modelo, $state['estado'], $ubicacion, $color, $id_proveedor, $id_almacen, $costo, $es_rentado, $state['reciclado'], $notas]
+      "INSERT INTO cajas (codigo,modelo,material,estado,ubicacion,color,id_proveedor,id_almacen,costo,es_rentado,reciclado,ciclos_uso,proveedor,notas,eliminado,created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, '', ?, 0, CURRENT_TIMESTAMP())",
+      [$codigo,$modelo,$material,$state['estado'],$ubicacion,$color,$id_proveedor,$id_almacen,$costo,$es_rentado,$state['reciclado'],$notas]
     );
     if (db_column_exists('cajas', 'estatus_logico')) {
       q("UPDATE cajas SET estatus_logico=? WHERE codigo=?", [$state['estatus_logico'], $codigo]);
@@ -643,7 +664,7 @@ case 'guardar':
       q("UPDATE cajas SET disponible=? WHERE codigo=?", [$state['disponible'], $codigo]);
     }
     caja_registrar_mov($pdo, $codigo, 'alta', null, 'Registro inicial');
-    caja_log('alta', ['codigo' => $codigo]);
+    caja_log('alta', ['codigo' => $codigo, 'material' => $material]);
     $pdo->commit();
     flash("<div class='alert alert-success'>Ataúd registrado.</div>");
   } catch (Exception $e) {
@@ -673,6 +694,7 @@ case 'editar':
       <form method="post" action="?r=cajas.actualizar&codigo=<?= urlencode($caja['codigo']) ?>">
         <?= csrf_field() ?>
         <?= form_input('modelo', 'Modelo', $caja['modelo'], ['required' => true]) ?>
+        <?= form_select('material', 'Material', caja_material_options(false, true), (string)($caja['material'] ?? ''), ['class' => 'form-select', 'required' => true]) ?>
         <?= form_select('estado', 'Estado', ['nuevo' => 'Nuevo', 'en_uso' => 'En uso', 'reciclado' => 'Reciclado', 'fuera_uso' => 'Fuera de uso'], $caja['estado'], ['class' => 'form-select']) ?>
         <div class="row g-2">
           <div class="col-md-6"><?= form_select('id_almacen', 'Almacén', $almacen_opts, (string)($caja['id_almacen'] ?? ''), ['class' => 'form-select']) ?></div>
@@ -708,6 +730,7 @@ case 'actualizar':
     redirect('cajas.listar');
   }
   $modelo = trim($_POST['modelo'] ?? '');
+  $material = inventario_caja_material_normalizar($_POST['material'] ?? null);
   $estado = trim($_POST['estado'] ?? 'nuevo');
   $color = trim($_POST['color'] ?? '');
   $id_proveedor = (int)($_POST['id_proveedor'] ?? 0) ?: null;
@@ -723,8 +746,8 @@ case 'actualizar':
   $notas = trim($_POST['notas'] ?? '');
   $ciclos = max(0, (int)($_POST['ciclos_uso'] ?? 0));
   $reciclado = (int)($_POST['reciclado'] ?? 0) ? 1 : 0;
-  if ($modelo === '') {
-    flash("<div class='alert alert-danger'>El modelo es obligatorio.</div>");
+  if ($modelo === '' || $material === null) {
+    flash("<div class='alert alert-danger'>El modelo y el material son obligatorios.</div>");
     redirect('cajas.editar&codigo='.$codigo);
   }
   $pdo = db();
@@ -733,6 +756,7 @@ case 'actualizar':
     $pdo->beginTransaction();
     $set = [
       'modelo=?',
+      'material=?',
       'estado=?',
       'ubicacion=?',
       'color=?',
@@ -746,6 +770,7 @@ case 'actualizar':
     ];
     $params = [
       $modelo,
+      $material,
       $state['estado'],
       $ubicacion,
       $color,
@@ -777,7 +802,7 @@ case 'actualizar':
         'Edición manual: '.caja_estado_label((string)($caja['estado'] ?? 'nuevo')).' -> '.caja_estado_label($state['estado'])
       );
     }
-    caja_log('actualizar', ['codigo' => $codigo]);
+    caja_log('actualizar', ['codigo' => $codigo, 'material' => $material]);
     $pdo->commit();
     flash("<div class='alert alert-success'>Ataúd actualizado.</div>");
   } catch (Throwable $e) {

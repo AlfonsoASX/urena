@@ -4,6 +4,7 @@ require_once __DIR__.'/../core/db.php';
 require_once __DIR__.'/../core/helpers.php';
 require_once __DIR__.'/../core/ui.php';
 require_once __DIR__.'/../core/auth.php';
+require_once __DIR__.'/../core/usuarios_directorio.php';
 
 require_login();
 
@@ -13,10 +14,7 @@ $action = $action ?? 'contratos';
  * Utilidades
  * ---------------------------------------------*/
 function __get_personal_activo() {
-  return qall("SELECT id_personal, CONCAT(nombre,' ',apellido_p,' ',apellido_m) AS nombre
-               FROM futuro_personal
-               WHERE (estatus IS NULL OR estatus NOT IN ('baja','inactivo'))
-               ORDER BY nombre ASC");
+  return usuarios_directorio_activos(['cobrador']);
 }
 
 function __titular_contrato($id_contrato) {
@@ -28,38 +26,18 @@ function __titular_contrato($id_contrato) {
 }
 
 function __vendedor_contrato($id_contrato) {
-  // intenta por PK; si no existe, cae a fecha_registro
-  $r = qone("SELECT CONCAT(fp.nombre,' ',fp.apellido_p,' ',fp.apellido_m) AS vendedor
-             FROM futuro_contrato_vendedor fcv
-             JOIN futuro_personal fp ON fp.id_personal=fcv.id_personal
-             WHERE fcv.id_contrato=? ORDER BY fcv.id_cont_vend DESC LIMIT 1", [$id_contrato]);
-  if (!$r) {
-    $r = qone("SELECT CONCAT(fp.nombre,' ',fp.apellido_p,' ',fp.apellido_m) AS vendedor
-               FROM futuro_contrato_vendedor fcv
-               JOIN futuro_personal fp ON fp.id_personal=fcv.id_personal
-               WHERE fcv.id_contrato=? ORDER BY fcv.fecha_registro DESC LIMIT 1", [$id_contrato]);
-  }
+  $r = qone("SELECT u.nombre AS vendedor FROM futuro_contratos c LEFT JOIN usuarios u ON u.id=c.id_usuario_vendedor WHERE c.id_contrato=?", [$id_contrato]);
   return $r['vendedor'] ?? '—';
 }
 
 function __cobrador_actual($id_contrato) {
-  $r = qone("SELECT fp.id_personal,
-                    CONCAT(fp.nombre,' ',fp.apellido_p,' ',fp.apellido_m) AS cobrador
+  $r = qone("SELECT u.id AS id_usuario,u.nombre AS cobrador
              FROM futuro_contrato_cobrador fcc
-             JOIN futuro_personal fp ON fp.id_personal=fcc.id_personal
+             JOIN usuarios u ON u.id=fcc.id_usuario
              WHERE fcc.id_contrato=?
              ORDER BY fcc.id_cont_cob DESC
              LIMIT 1", [$id_contrato]);
-  if (!$r) {
-    $r = qone("SELECT fp.id_personal,
-                      CONCAT(fp.nombre,' ',fp.apellido_p,' ',fp.apellido_m) AS cobrador
-               FROM futuro_contrato_cobrador fcc
-               JOIN futuro_personal fp ON fp.id_personal=fcc.id_personal
-               WHERE fcc.id_contrato=?
-               ORDER BY fcc.fecha_registro DESC
-               LIMIT 1", [$id_contrato]);
-  }
-  return $r ?: ['id_personal'=>0,'cobrador'=>'—'];
+  return $r ?: ['id_usuario'=>0,'cobrador'=>'—'];
 }
 
 /* ---------------------------------------------
@@ -88,13 +66,9 @@ case 'contratos':
           WHERE tc.id_contrato=c.id_contrato AND (t.nombre LIKE ? OR t.apellido_p LIKE ? OR t.apellido_m LIKE ?)
         )
         OR
-        EXISTS (
-          SELECT 1 FROM futuro_contrato_vendedor fcv
-          JOIN futuro_personal fp ON fp.id_personal=fcv.id_personal
-          WHERE fcv.id_contrato=c.id_contrato AND (fp.nombre LIKE ? OR fp.apellido_p LIKE ? OR fp.apellido_m LIKE ?)
-        )
+        EXISTS (SELECT 1 FROM usuarios uv WHERE uv.id=c.id_usuario_vendedor AND uv.nombre LIKE ?)
       )";
-      array_push($params, $like,$like,$like,$like,$like,$like);
+      array_push($params, $like,$like,$like,$like);
     }
   }
 
@@ -156,7 +130,7 @@ $contratos = qall("
     $c['vendedor'] = __vendedor_contrato($c['id_contrato']);
     $act = __cobrador_actual($c['id_contrato']);
     $c['cobrador'] = $act['cobrador'];
-    $c['id_cobr']  = (int)$act['id_personal'];
+    $c['id_cobr']  = (int)$act['id_usuario'];
   } unset($c);
 
   ob_start(); ?>
@@ -216,10 +190,10 @@ $contratos = qall("
             <td>
               <form class="d-flex gap-2" method="post" action="?r=rutas.asignar">
                 <input type="hidden" name="id_contrato" value="<?= (int)$row['id_contrato'] ?>">
-                <select name="id_personal" class="form-select form-select-sm" onchange="this.form.submit()">
+                <select name="id_usuario" class="form-select form-select-sm" onchange="this.form.submit()">
                   <option value="0">— Selecciona cobrador —</option>
                   <?php foreach($cobradores as $p): ?>
-                    <option value="<?= (int)$p['id_personal'] ?>" <?= ((int)$row['id_cobr']===(int)$p['id_personal'])?'selected':'' ?>>
+                    <option value="<?= (int)$p['id'] ?>" <?= ((int)$row['id_cobr']===(int)$p['id'])?'selected':'' ?>>
                       <?= e($p['nombre']) ?>
                     </option>
                   <?php endforeach; ?>
@@ -240,10 +214,10 @@ $contratos = qall("
 
     <div class="row g-2 mt-2">
       <div class="col-md-6">
-        <select name="id_personal" class="form-select" required>
+        <select name="id_usuario" class="form-select" required>
           <option value="">— Asignar a cobrador… —</option>
           <?php foreach($cobradores as $p): ?>
-            <option value="<?= (int)$p['id_personal'] ?>"><?= e($p['nombre']) ?></option>
+            <option value="<?= (int)$p['id'] ?>"><?= e($p['nombre']) ?></option>
           <?php endforeach; ?>
         </select>
       </div>
@@ -274,15 +248,16 @@ break;
  * =======================================================*/
 case 'asignar':
   $id_contrato = (int)($_POST['id_contrato'] ?? 0);
-  $id_personal = (int)($_POST['id_personal'] ?? 0);
+  $id_usuario = (int)($_POST['id_usuario'] ?? 0);
 
-  if ($id_contrato<=0 || $id_personal<=0) {
+  $cobrador = usuarios_directorio_usuario($id_usuario, true);
+  if ($id_contrato<=0 || !$cobrador || ($cobrador['puesto'] ?? '') !== 'cobrador') {
     $_SESSION['_alerts'] = "<div class='alert alert-warning'>Selecciona un cobrador válido.</div>";
     redirect('rutas.contratos');
   }
 
-  q("INSERT INTO futuro_contrato_cobrador (id_contrato, id_personal, fecha_registro)
-     VALUES (?,?,CURRENT_TIMESTAMP())", [$id_contrato, $id_personal]);
+  q("INSERT INTO futuro_contrato_cobrador (id_contrato,id_usuario,fecha_registro)
+     VALUES (?,?,CURRENT_TIMESTAMP())", [$id_contrato,$id_usuario]);
 
   $_SESSION['_alerts'] = "<div class='alert alert-success'>Cobrador asignado al contrato #".(int)$id_contrato.".</div>";
   redirect('rutas.contratos');
@@ -293,13 +268,14 @@ break;
  * =======================================================*/
 case 'asignar_masivo':
   $ids = $_POST['ids'] ?? [];
-  $id_personal = (int)($_POST['id_personal'] ?? 0);
+  $id_usuario = (int)($_POST['id_usuario'] ?? 0);
 
   if (!is_array($ids) || empty($ids)) {
     $_SESSION['_alerts'] = "<div class='alert alert-warning'>Selecciona al menos un contrato.</div>";
     redirect('rutas.contratos');
   }
-  if ($id_personal <= 0) {
+  $cobrador = usuarios_directorio_usuario($id_usuario, true);
+  if (!$cobrador || ($cobrador['puesto'] ?? '') !== 'cobrador') {
     $_SESSION['_alerts'] = "<div class='alert alert-warning'>Selecciona un cobrador válido.</div>";
     redirect('rutas.contratos');
   }
@@ -307,12 +283,12 @@ case 'asignar_masivo':
   $pdo = db();
   try {
     $pdo->beginTransaction();
-    $stmt = $pdo->prepare("INSERT INTO futuro_contrato_cobrador (id_contrato, id_personal, fecha_registro) VALUES (?,?,CURRENT_TIMESTAMP())");
+    $stmt = $pdo->prepare("INSERT INTO futuro_contrato_cobrador (id_contrato,id_usuario,fecha_registro) VALUES (?,?,CURRENT_TIMESTAMP())");
     $count = 0;
     foreach ($ids as $idc) {
       $idc = (int)$idc;
       if ($idc > 0) {
-        $stmt->execute([$idc, $id_personal]);
+        $stmt->execute([$idc,$id_usuario]);
         $count++;
       }
     }
@@ -330,16 +306,16 @@ break;
  * VISTA: COBRADORES (lista + detalle por cobrador)
  * =======================================================*/
 case 'cobradores':
-  $idp = (int)($_GET['id_personal'] ?? 0);
+  $idp = (int)($_GET['id_usuario'] ?? 0);
 
   if ($idp > 0) {
-    $pers = qone("SELECT CONCAT(nombre,' ',apellido_p,' ',apellido_m) AS nombre FROM futuro_personal WHERE id_personal=?", [$idp]);
+    $pers = usuarios_directorio_usuario($idp);
 
     $rows = qall("
       SELECT c.id_contrato, DATE(c.fecha_registro) AS fecha, c.estatus, c.costo_final
       FROM futuro_contratos c
       WHERE (
-        SELECT fcc2.id_personal
+        SELECT fcc2.id_usuario
         FROM futuro_contrato_cobrador fcc2
         WHERE fcc2.id_contrato=c.id_contrato
         ORDER BY fcc2.id_cont_cob DESC
@@ -389,21 +365,20 @@ case 'cobradores':
   }
 
   $cobradores = qall("
-    SELECT fp.id_personal,
-           CONCAT(fp.nombre,' ',fp.apellido_p,' ',fp.apellido_m) AS nombre,
+    SELECT u.id AS id_usuario,u.nombre,
            IFNULL((
              SELECT COUNT(*)
              FROM futuro_contratos c
              WHERE (
-               SELECT fcc2.id_personal
+               SELECT fcc2.id_usuario
                FROM futuro_contrato_cobrador fcc2
                WHERE fcc2.id_contrato=c.id_contrato
                ORDER BY fcc2.id_cont_cob DESC
                LIMIT 1
-             ) = fp.id_personal
+             ) = u.id
            ),0) AS contratos
-    FROM futuro_personal fp
-    WHERE (fp.estatus IS NULL OR fp.estatus NOT IN ('baja','inactivo'))
+    FROM usuarios u
+    WHERE UPPER(COALESCE(u.estatus,'ACTIVO'))='ACTIVO' AND u.puesto='cobrador'
     ORDER BY nombre ASC
   ");
 
@@ -430,7 +405,7 @@ case 'cobradores':
           <td><?= e($p['nombre']) ?></td>
           <td class="text-end"><?= (int)$p['contratos'] ?></td>
           <td>
-            <a class="btn btn-outline-secondary btn-sm" href="?r=rutas.cobradores&id_personal=<?= (int)$p['id_personal'] ?>">Ver contratos</a>
+            <a class="btn btn-outline-secondary btn-sm" href="?r=rutas.cobradores&id_usuario=<?= (int)$p['id_usuario'] ?>">Ver contratos</a>
           </td>
         </tr>
         <?php endforeach; ?>

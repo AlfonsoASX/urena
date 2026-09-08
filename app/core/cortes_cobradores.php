@@ -110,18 +110,17 @@ function cortes_cobradores_formatear_limite(DateTimeImmutable $fecha): string {
   return $dias[(int)$fecha->format('w')].' '.$fecha->format('d/m/Y H:i');
 }
 
-function cortes_cobradores_movimientos(array $periodo, int $idPersonal = 0): array {
+function cortes_cobradores_movimientos(array $periodo, int $idUsuario = 0): array {
   $wherePersonal = '';
   $params = [$periodo['inicio_sql'], $periodo['fin_sql']];
-  if ($idPersonal > 0) {
-    $wherePersonal = ' AND ac.id_personal=?';
-    $params[] = $idPersonal;
+  if ($idUsuario > 0) {
+    $wherePersonal = ' AND ac.id_usuario=?';
+    $params[] = $idUsuario;
   }
 
   return qall("
     SELECT a.id_abono,a.id_contrato,a.fecha_registro,a.cant_abono,
-           ac.id_personal AS id_cobrador,
-           TRIM(CONCAT(COALESCE(p.nombre,''),' ',COALESCE(p.apellido_p,''),' ',COALESCE(p.apellido_m,''))) AS cobrador,
+           ac.id_usuario AS id_cobrador,u.nombre AS cobrador,
            (
              SELECT TRIM(CONCAT(COALESCE(t.nombre,''),' ',COALESCE(t.apellido_p,''),' ',COALESCE(t.apellido_m,'')))
              FROM titular_contrato tc
@@ -138,7 +137,7 @@ function cortes_cobradores_movimientos(array $periodo, int $idPersonal = 0): arr
       ORDER BY ac2.id_abono_cobrador DESC
       LIMIT 1
     )
-    LEFT JOIN futuro_personal p ON p.id_personal=ac.id_personal
+    JOIN usuarios u ON u.id=ac.id_usuario
     WHERE a.fecha_registro>=? AND a.fecha_registro<? {$wherePersonal}
     ORDER BY a.fecha_registro DESC,a.id_abono DESC
     LIMIT 20000
@@ -152,7 +151,7 @@ function cortes_cobradores_resumen(array $periodo): array {
     if ($id <= 0) continue;
     if (!isset($resumen[$id])) {
       $resumen[$id] = [
-        'id_personal' => $id,
+        'id_usuario' => $id,
         'nombre' => trim((string)($row['cobrador'] ?? '')),
         'total' => 0.0,
         'pagos' => 0,
@@ -172,7 +171,7 @@ function cortes_cobradores_totales_periodos(array $periodos): array {
   $totales = [];
   foreach ($periodos as $periodo) {
     $row = qone("
-      SELECT COUNT(*) AS pagos,COUNT(DISTINCT ac.id_personal) AS cobradores,
+      SELECT COUNT(*) AS pagos,COUNT(DISTINCT ac.id_usuario) AS cobradores,
              COALESCE(SUM(a.cant_abono),0) AS total
       FROM futuro_abonos a
       JOIN futuro_abono_cobrador ac ON ac.id_abono_cobrador=(
@@ -190,8 +189,8 @@ function cortes_cobradores_totales_periodos(array $periodos): array {
   return $totales;
 }
 
-function cortes_cobradores_total_personal(array $periodo, int $idPersonal): array {
-  if ($idPersonal <= 0) return ['pagos'=>0,'contratos'=>0,'total'=>0.0];
+function cortes_cobradores_total_personal(array $periodo, int $idUsuario): array {
+  if ($idUsuario <= 0) return ['pagos'=>0,'contratos'=>0,'total'=>0.0];
   $row = qone("
     SELECT COUNT(*) AS pagos,COUNT(DISTINCT a.id_contrato) AS contratos,
            COALESCE(SUM(a.cant_abono),0) AS total
@@ -200,8 +199,8 @@ function cortes_cobradores_total_personal(array $periodo, int $idPersonal): arra
       SELECT ac2.id_abono_cobrador FROM futuro_abono_cobrador ac2
       WHERE ac2.id_abono=a.id_abono ORDER BY ac2.id_abono_cobrador DESC LIMIT 1
     )
-    WHERE ac.id_personal=? AND a.fecha_registro>=? AND a.fecha_registro<?
-  ", [$idPersonal, $periodo['inicio_sql'], $periodo['fin_sql']]);
+    WHERE ac.id_usuario=? AND a.fecha_registro>=? AND a.fecha_registro<?
+  ", [$idUsuario, $periodo['inicio_sql'], $periodo['fin_sql']]);
   return [
     'pagos' => (int)($row['pagos'] ?? 0),
     'contratos' => (int)($row['contratos'] ?? 0),

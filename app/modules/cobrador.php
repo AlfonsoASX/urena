@@ -19,8 +19,7 @@ $action = $action ?? 'panel';
 
 function cobrador_personal_id(): int {
   $u = current_user();
-  $r = qone("SELECT id_personal FROM futuro_personal WHERE id=?", [$u['id']]);
-  return (int)($r['id_personal'] ?? 0);
+  return (int)($u['id'] ?? 0);
 }
 
 function cobrador_saldo_contrato(PDO $pdo, int $id_contrato, float $monto_nuevo = 0.0, bool $lock = false): array {
@@ -47,7 +46,7 @@ function cobrador_saldo_contrato(PDO $pdo, int $id_contrato, float $monto_nuevo 
 /**
  * Obtiene la lista de contratos con filtros, ordenamiento y PAGINACIÓN
  */
-function cobrador_contratos_paginado(int $id_personal, bool $soloAsignados = true, string $busqueda = '', string $orden = 'prioridad', int $pagina = 1, int $limite = 10): array {
+function cobrador_contratos_paginado(int $id_usuario, bool $soloAsignados = true, string $busqueda = '', string $orden = 'prioridad', int $pagina = 1, int $limite = 10): array {
     $offset = ($pagina - 1) * $limite;
 
     // Lista blanca de ordenamientos
@@ -62,7 +61,7 @@ function cobrador_contratos_paginado(int $id_personal, bool $soloAsignados = tru
     // Base del Query para WHERE y JOINs (Reutilizado para conteo y selección)
     $baseSql = "
         FROM futuro_contratos c
-        ". ($soloAsignados ? "INNER JOIN futuro_contrato_cobrador fc ON fc.id_contrato = c.id_contrato" : "") ."
+        ". ($soloAsignados ? "INNER JOIN futuro_contrato_cobrador fc ON fc.id_cont_cob=(SELECT MAX(fcx.id_cont_cob) FROM futuro_contrato_cobrador fcx WHERE fcx.id_contrato=c.id_contrato)" : "") ."
         LEFT JOIN vw_titular_contrato t ON t.id_contrato = c.id_contrato
         LEFT JOIN titular_contrato tc ON tc.id_contrato = c.id_contrato
         LEFT JOIN titular_dom td ON td.id_titular = tc.id_titular
@@ -74,8 +73,8 @@ function cobrador_contratos_paginado(int $id_personal, bool $soloAsignados = tru
 
     // 1. Filtros
     if ($soloAsignados) {
-        $baseSql .= " AND fc.id_personal = ?";
-        $params[] = $id_personal;
+        $baseSql .= " AND fc.id_usuario = ?";
+        $params[] = $id_usuario;
     }
 
     if (!empty($busqueda)) {
@@ -123,7 +122,7 @@ function cobrador_contratos_paginado(int $id_personal, bool $soloAsignados = tru
 /**
  * Obtiene la lista de contratos con filtros de búsqueda y ordenamiento
  */
-function cobrador_contratos(int $id_personal, bool $soloAsignados = true, string $busqueda = '', string $orden = 'prioridad'): array {
+function cobrador_contratos(int $id_usuario, bool $soloAsignados = true, string $busqueda = '', string $orden = 'prioridad'): array {
 
   // Lista blanca de ordenamientos permitidos para evitar inyección SQL
   $orderBySQL = match($orden) {
@@ -189,7 +188,7 @@ function cobrador_contratos(int $id_personal, bool $soloAsignados = true, string
       ) AS saldo_actual
 
     FROM futuro_contratos c
-    ". ($soloAsignados ? "INNER JOIN futuro_contrato_cobrador fc ON fc.id_contrato = c.id_contrato" : "") ."
+    ". ($soloAsignados ? "INNER JOIN futuro_contrato_cobrador fc ON fc.id_cont_cob=(SELECT MAX(fcx.id_cont_cob) FROM futuro_contrato_cobrador fcx WHERE fcx.id_contrato=c.id_contrato)" : "") ."
     LEFT JOIN vw_titular_contrato t ON t.id_contrato = c.id_contrato
     LEFT JOIN titular_contrato tc ON tc.id_contrato = c.id_contrato
     LEFT JOIN titular_dom td ON td.id_titular = tc.id_titular
@@ -201,8 +200,8 @@ function cobrador_contratos(int $id_personal, bool $soloAsignados = true, string
 
   // 1. Filtro de asignación (Solo mis contratos)
   if ($soloAsignados) {
-    $sql .= " AND fc.id_personal = ?";
-    $params[] = $id_personal;
+    $sql .= " AND fc.id_usuario = ?";
+    $params[] = $id_usuario;
   }
 
   // 2. Filtro de búsqueda (ID, Nombre del Titular o Dirección)
@@ -220,7 +219,7 @@ function cobrador_contratos(int $id_personal, bool $soloAsignados = true, string
   return qall($sql, $params);
 }
 
-function cobrador_registrar_gestion(int $id_contrato, ?float $monto, int $id_personal, float $lat, float $lng, ?string $fecha_proxima, ?string $notas): ?int {
+function cobrador_registrar_gestion(int $id_contrato, ?float $monto, int $id_usuario, float $lat, float $lng, ?string $fecha_proxima, ?string $notas): ?int {
   $pdo = db();
   try {
     $pdo->beginTransaction();
@@ -228,6 +227,9 @@ function cobrador_registrar_gestion(int $id_contrato, ?float $monto, int $id_per
     $id_abono = null;
     // Si hay monto, registramos el abono financiero
     if ($monto && $monto > 0) {
+      if (!futuros_promociones_condicion_contrato($id_contrato)) {
+        futuros_promociones_migrar_contrato_vigente($id_contrato);
+      }
 
       $calc = cobrador_saldo_contrato($pdo, $id_contrato, (float)$monto, true);
 
@@ -236,13 +238,14 @@ function cobrador_registrar_gestion(int $id_contrato, ?float $monto, int $id_per
       $id_abono = $pdo->lastInsertId();
 
       // Relacionar abono con cobrador
-      q("INSERT INTO futuro_abono_cobrador (id_abono, id_personal, fecha_registro)
-         VALUES (?,?,CURRENT_TIMESTAMP())", [$id_abono, $id_personal]);
+      q("INSERT INTO futuro_abono_cobrador (id_abono,id_usuario,fecha_registro)
+         VALUES (?,?,CURRENT_TIMESTAMP())", [$id_abono,$id_usuario]);
+      futuros_promociones_reconstruir_distribuciones($id_contrato);
     }
 
     // Registrar la gestión (visita)
-    q("INSERT INTO futuro_gestion (id_contrato, id_personal, cant_abono, latitud, longitud, fecha_proxima_visita, notas)
-       VALUES (?,?,?,?,?,?,?)", [$id_contrato, $id_personal, $monto, $lat, $lng, $fecha_proxima, $notas]);
+    q("INSERT INTO futuro_gestion (id_contrato,id_usuario,cant_abono,latitud,longitud,fecha_proxima_visita,notas)
+       VALUES (?,?,?,?,?,?,?)", [$id_contrato,$id_usuario,$monto,$lat,$lng,$fecha_proxima,$notas]);
     $id_gestion = $pdo->lastInsertId();
 
     $pdo->commit();
@@ -323,7 +326,7 @@ case 'panel':
   break;
 
 case 'contratos':
-  $id_personal = cobrador_personal_id();
+  $id_usuario = cobrador_personal_id();
   $filtro = ($_GET['filtro'] ?? '') === 'todos' ? false : true; 
 
   // Capturar parámetros
@@ -335,7 +338,7 @@ case 'contratos':
   $limite   = 12;
 
   // Llamada a la nueva función paginada
-  $resultado = cobrador_contratos_paginado($id_personal, $filtro, $busqueda, $orden, $pagina, $limite);
+  $resultado = cobrador_contratos_paginado($id_usuario, $filtro, $busqueda, $orden, $pagina, $limite);
   $rows = $resultado['rows'];
   $meta = $resultado['meta'];
 
@@ -520,9 +523,9 @@ case 'gestion':
     $lng = (float)($_POST['longitud'] ?? 0);
     $fecha_proxima = ($_POST['fecha_proxima_visita'] ?? '') ?: null;
     $notas = $_POST['notas'] ?? '';
-    $id_personal = cobrador_personal_id();
+    $id_usuario = cobrador_personal_id();
 
-    $id_resultado = cobrador_registrar_gestion($id_contrato, $monto, $id_personal, $lat, $lng, $fecha_proxima, $notas);
+    $id_resultado = cobrador_registrar_gestion($id_contrato, $monto, $id_usuario, $lat, $lng, $fecha_proxima, $notas);
 
     if ($monto && $id_resultado) {
         redirect('cobrador.ticket&id_abono='.$id_resultado);
@@ -741,10 +744,10 @@ case 'estado':
         a.cant_abono AS monto,
         a.saldo AS saldo,
         NULL AS notas,
-        COALESCE(CONCAT(p.nombre, ' ', p.apellido_p), '') AS responsable
+        COALESCE(p.nombre, '') AS responsable
      FROM futuro_abonos a
-     LEFT JOIN futuro_abono_cobrador fac ON fac.id_abono = a.id_abono
-     LEFT JOIN futuro_personal p ON p.id_personal = fac.id_personal
+     LEFT JOIN futuro_abono_cobrador fac ON fac.id_abono_cobrador=(SELECT MAX(facx.id_abono_cobrador) FROM futuro_abono_cobrador facx WHERE facx.id_abono=a.id_abono)
+     LEFT JOIN usuarios p ON p.id = fac.id_usuario
      WHERE a.id_contrato = ?
     )
     UNION ALL
@@ -755,9 +758,9 @@ case 'estado':
         COALESCE(g.cant_abono, 0) AS monto,
         NULL AS saldo,
         g.notas AS notas,
-        COALESCE(CONCAT(p2.nombre, ' ', p2.apellido_p), '') AS responsable
+        COALESCE(p2.nombre, '') AS responsable
      FROM futuro_gestion g
-     LEFT JOIN futuro_personal p2 ON p2.id_personal = g.id_personal
+     LEFT JOIN usuarios p2 ON p2.id = g.id_usuario
      WHERE g.id_contrato = ?
     )
     ORDER BY fecha DESC, folio DESC
@@ -902,7 +905,7 @@ case 'ticket':
         a.id_abono, a.fecha_registro, a.cant_abono,
         c.id_contrato, c.estatus, c.tipo_contrato, c.costo_final, c.tipo_pago,
         t.titular,
-        COALESCE(CONCAT(p.nombre, ' ', p.apellido_p), ?) AS nombre_cobrador,
+        COALESCE(p.nombre, ?) AS nombre_cobrador,
         
         -- TOTAL PAGADO HASTA ESE MOMENTO: Sumamos solo los abonos anteriores o iguales a este
         COALESCE((
@@ -926,8 +929,8 @@ case 'ticket':
     FROM futuro_abonos a
     INNER JOIN futuro_contratos c ON c.id_contrato = a.id_contrato
     LEFT JOIN vw_titular_contrato t ON t.id_contrato = c.id_contrato
-    LEFT JOIN futuro_abono_cobrador fac ON fac.id_abono = a.id_abono
-    LEFT JOIN futuro_personal p ON p.id_personal = fac.id_personal
+    LEFT JOIN futuro_abono_cobrador fac ON fac.id_abono_cobrador=(SELECT MAX(facx.id_abono_cobrador) FROM futuro_abono_cobrador facx WHERE facx.id_abono=a.id_abono)
+    LEFT JOIN usuarios p ON p.id = fac.id_usuario
     WHERE a.id_abono = ?
     LIMIT 1
   ";

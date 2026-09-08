@@ -142,7 +142,7 @@ default:
   }
 
   $asignacion = so_servicio_asignacion($id) ?? [];
-  $auxiliares = so_user_options(['administradora','auxiliar','coordinador']);
+  $auxiliares = so_user_options(['auxiliar']);
   $cajasState = so_inventory_section_state('cajas', '', 12);
   $articulosState = so_inventory_section_state('articulos', '', 100);
   $equiposGrupos = iv2_disponibilidad_equipos('', 50, true);

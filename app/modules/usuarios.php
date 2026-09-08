@@ -4,6 +4,7 @@ require_once __DIR__.'/../core/db.php';
 require_once __DIR__.'/../core/helpers.php';
 require_once __DIR__.'/../core/ui.php';
 require_once __DIR__.'/../core/auth.php';
+require_once __DIR__.'/../core/usuarios_directorio.php';
 
 require_login();
 require_permission('usuarios.admin');
@@ -93,6 +94,40 @@ function usuarios_puesto_select(string $selected = '', string $name = 'puesto'):
   return $html;
 }
 
+function usuarios_jefe_select(?int $selected = null, int $excludeId = 0): string {
+  $html = "<div class='mb-3'><label class='form-label'>Jefe directo</label><select name='jefe_directo_id' class='form-select'>";
+  $html .= "<option value=''>-- Sin jefe directo --</option>";
+  foreach (usuarios_directorio_activos(['lider','gerente']) as $row) {
+    if ((int)$row['id'] === $excludeId) continue;
+    $sel = (int)$selected === (int)$row['id'] ? ' selected' : '';
+    $puesto = auth_puestos()[$row['puesto']] ?? $row['puesto'];
+    $html .= "<option value='".(int)$row['id']."'{$sel}>".e($row['nombre'].' - '.$puesto)."</option>";
+  }
+  return $html."</select><div class='form-text'>Vendedor requiere lider; lider requiere gerente.</div></div>";
+}
+
+function usuarios_acceso_control(bool $checked): string {
+  return "<div class='form-check form-switch mb-3'><input class='form-check-input' type='checkbox' name='acceso_sistema' value='1' id='acceso_sistema'".($checked ? ' checked' : '')."><label class='form-check-label' for='acceso_sistema'>Puede iniciar sesion</label></div>";
+}
+
+function usuarios_validar_captura(int $id, string $nombre, string $puesto, ?int $jefeId, bool $acceso, string $usuario, string $pass, array $rolesIds, ?array $actual = null, bool $activo = true): array {
+  $errores = [];
+  if ($nombre === '') $errores[] = 'El nombre completo es obligatorio.';
+  if (!isset(auth_puestos()[$puesto])) $errores[] = 'Selecciona un puesto valido.';
+  if ($activo || $jefeId) {
+    $errores = array_merge($errores, usuarios_directorio_validar_asignacion($id, $puesto, $jefeId, $id > 0));
+  }
+  if ($id > 0) $errores = array_merge($errores, usuarios_directorio_validar_dependientes($id,$puesto,$activo));
+  if ($acceso && !$activo) $errores[] = 'Un usuario inactivo no puede tener acceso al sistema.';
+  $hashDisponible = $pass !== '' ? password_hash($pass, PASSWORD_DEFAULT) : ($actual['pass'] ?? null);
+  $errores = array_merge($errores, usuarios_directorio_validar_acceso($acceso, $usuario, $hashDisponible, $rolesIds));
+  if ($usuario !== '') {
+    $duplicado = qone("SELECT id FROM usuarios WHERE usuario=? AND id<>? LIMIT 1", [$usuario,$id]);
+    if ($duplicado) $errores[] = 'Ese nombre de usuario ya esta registrado.';
+  }
+  return array_values(array_unique($errores));
+}
+
 // ── Switch principal ────────────────────────────────────────────────────────────
 
 switch ($action) {
@@ -103,20 +138,22 @@ switch ($action) {
     if (auth_roles_enabled()) {
       $rows = qall("
         SELECT u.id, u.usuario, u.nombre, COALESCE(u.puesto,'') AS puesto,
+               COALESCE(u.acceso_sistema,1) AS acceso_sistema,u.estatus,j.nombre AS jefe_nombre,
                GROUP_CONCAT(r.nombre ORDER BY r.nombre SEPARATOR ', ') AS roles
         FROM usuarios u
+        LEFT JOIN usuarios j ON j.id=u.jefe_directo_id
         LEFT JOIN usuarios_roles ur ON ur.usuario_id = u.id
         LEFT JOIN roles r ON r.id = ur.rol_id
-        WHERE u.estatus='ACTIVO'
-        GROUP BY u.id, u.usuario, u.nombre, u.puesto
-        ORDER BY u.nombre ASC
+        GROUP BY u.id, u.usuario, u.nombre, u.puesto,u.acceso_sistema,u.estatus,j.nombre
+        ORDER BY (u.estatus='ACTIVO') DESC,u.nombre ASC
       ");
     } else {
       $rows = qall("
-        SELECT u.id, u.usuario, u.nombre, COALESCE(u.puesto,'') AS puesto, '' AS roles
+        SELECT u.id, u.usuario, u.nombre, COALESCE(u.puesto,'') AS puesto,
+               COALESCE(u.acceso_sistema,1) AS acceso_sistema,u.estatus,j.nombre AS jefe_nombre,'' AS roles
         FROM usuarios u
-        WHERE u.estatus='ACTIVO'
-        ORDER BY u.nombre ASC
+        LEFT JOIN usuarios j ON j.id=u.jefe_directo_id
+        ORDER BY (u.estatus='ACTIVO') DESC,u.nombre ASC
       ");
     }
     $puestoLabels = auth_puestos();
@@ -126,6 +163,7 @@ switch ($action) {
       <h1 class="h4 m-0">Usuarios</h1>
       <div class="d-flex gap-2">
         <a href="?r=usuarios.nuevo" class="btn btn-success btn-sm">Nuevo usuario</a>
+        <a href="?r=usuarios.directorio" class="btn btn-outline-primary btn-sm">Conciliacion de personal</a>
         <a href="?r=usuarios.roles" class="btn btn-outline-secondary btn-sm">Roles</a>
         <a href="?r=usuarios.permisos" class="btn btn-outline-secondary btn-sm">Permisos</a>
       </div>
@@ -146,6 +184,8 @@ switch ($action) {
             <th>Usuario</th>
             <th>Nombre</th>
             <th>Puesto</th>
+            <th>Jefe directo</th>
+            <th>Acceso</th>
             <th>Roles</th>
             <th style="width:260px">Acciones</th>
           </tr>
@@ -154,7 +194,7 @@ switch ($action) {
           <?php foreach ($rows as $r): ?>
           <tr>
             <td><?= (int)$r['id'] ?></td>
-            <td><?= e($r['usuario']) ?></td>
+            <td><?= e($r['usuario'] ?: 'Sin acceso') ?></td>
             <td><?= e($r['nombre']) ?></td>
             <td>
               <?php if ($r['puesto'] !== ''): ?>
@@ -163,10 +203,20 @@ switch ($action) {
                 <span class="text-muted small">—</span>
               <?php endif; ?>
             </td>
+            <td><?= e($r['jefe_nombre'] ?: '--') ?></td>
+            <td>
+              <?php if (($r['estatus'] ?? '') !== 'ACTIVO'): ?>
+                <span class="badge text-bg-secondary">Inactivo</span>
+              <?php elseif (!empty($r['acceso_sistema'])): ?>
+                <span class="badge text-bg-success">Habilitado</span>
+              <?php else: ?>
+                <span class="badge text-bg-light">Directorio</span>
+              <?php endif; ?>
+            </td>
             <td><?= e($r['roles'] ?? '—') ?></td>
             <td class="d-flex flex-wrap gap-1">
               <a class="btn btn-outline-primary btn-sm" href="?r=usuarios.editar&id=<?= (int)$r['id'] ?>">Editar</a>
-              <a class="btn btn-outline-warning btn-sm" href="?r=usuarios.cambiar_password&id=<?= (int)$r['id'] ?>">Contraseña</a>
+              <?php if (!empty($r['acceso_sistema'])): ?><a class="btn btn-outline-warning btn-sm" href="?r=usuarios.cambiar_password&id=<?= (int)$r['id'] ?>">Contrasena</a><?php endif; ?>
               <form method="post" action="?r=usuarios.eliminar&id=<?= (int)$r['id'] ?>" class="m-0 p-0 d-inline">
                 <?= csrf_field() ?>
                 <button class="btn btn-outline-danger btn-sm"
@@ -178,7 +228,7 @@ switch ($action) {
           </tr>
           <?php endforeach; ?>
           <?php if (empty($rows)): ?>
-          <tr><td colspan="6" class="text-center text-muted">Sin usuarios</td></tr>
+          <tr><td colspan="8" class="text-center text-muted">Sin usuarios</td></tr>
           <?php endif; ?>
         </tbody>
       </table>
@@ -196,10 +246,13 @@ switch ($action) {
         <h1 class="h5 mb-3">Nuevo usuario</h1>
         <form method="post" action="?r=usuarios.guardar">
           <?= csrf_field() ?>
-          <?= form_input('usuario', 'Usuario', '', ['required'=>true]) ?>
           <?= form_input('nombre', 'Nombre completo', '', ['required'=>true]) ?>
-          <?= form_input('pass', 'Contraseña', '', ['type'=>'password','required'=>true]) ?>
           <?= usuarios_puesto_select() ?>
+          <?= usuarios_jefe_select() ?>
+          <div class="mb-3"><label class="form-label">Estatus laboral</label><select name="estatus" class="form-select"><option value="ACTIVO">Activo</option><option value="INACTIVO">Inactivo / historico</option></select></div>
+          <?= usuarios_acceso_control(false) ?>
+          <?= form_input('usuario', 'Usuario para iniciar sesion', '') ?>
+          <?= form_input('pass', 'Contrasena inicial', '', ['type'=>'password']) ?>
           <?php if (!empty($roles)): ?>
             <div class="mb-3">
               <label class="form-label">Roles</label>
@@ -236,18 +289,29 @@ switch ($action) {
     $nombre  = trim($_POST['nombre'] ?? '');
     $pass    = (string)($_POST['pass'] ?? '');
     $puesto  = trim($_POST['puesto'] ?? '');
-    if ($usuario === '' || $nombre === '' || $pass === '') {
-      flash("<div class='alert alert-warning'>Completa los datos obligatorios.</div>");
+    $roles_ids = array_map('intval', $_POST['roles'] ?? []);
+    $jefeId = (int)($_POST['jefe_directo_id'] ?? 0) ?: null;
+    $acceso = !empty($_POST['acceso_sistema']);
+    $estatus = strtoupper(trim((string)($_POST['estatus'] ?? 'ACTIVO'))) === 'INACTIVO' ? 'INACTIVO' : 'ACTIVO';
+    $errores = usuarios_validar_captura(0,$nombre,$puesto,$jefeId,$acceso,$usuario,$pass,$roles_ids,null,$estatus==='ACTIVO');
+    if ($errores) {
+      flash("<div class='alert alert-warning'>".e(implode(' ', $errores))."</div>");
       redirect('usuarios.nuevo');
     }
-    $puestosValidos = array_keys(auth_puestos());
-    if ($puesto !== '' && !in_array($puesto, $puestosValidos, true)) $puesto = '';
-    $hash = password_hash($pass, PASSWORD_DEFAULT);
-    q("INSERT INTO usuarios (usuario, nombre, pass, puesto) VALUES (?,?,?,?)",
-      [$usuario, $nombre, $hash, $puesto ?: null]);
-    $id = (int)db()->lastInsertId();
-    $roles_ids = array_map('intval', $_POST['roles'] ?? []);
-    usuarios_asignar_roles($id, $roles_ids);
+    $pdo = db();
+    try {
+      $pdo->beginTransaction();
+      q("INSERT INTO usuarios (usuario,nombre,pass,perfil,puesto,jefe_directo_id,acceso_sistema,estatus) VALUES (?,?,?,?,?,?,?,?)", [
+        $acceso ? $usuario : null,$nombre,$acceso ? password_hash($pass,PASSWORD_DEFAULT) : null,
+        $acceso ? 'usuario' : null,$puesto,$jefeId,$acceso ? 1 : 0,$estatus,
+      ]);
+      $id = (int)$pdo->lastInsertId();
+      usuarios_asignar_roles($id, $acceso ? $roles_ids : []);
+      $pdo->commit();
+    } catch (Throwable $e) {
+      if ($pdo->inTransaction()) $pdo->rollBack();
+      throw $e;
+    }
     flash("<div class='alert alert-success'>Usuario creado.</div>");
     redirect('usuarios.listar');
     break;
@@ -255,7 +319,7 @@ switch ($action) {
   // ── Editar usuario ───────────────────────────────────────────────────────────
   case 'editar':
     $id = (int)($_GET['id'] ?? 0);
-    $u  = qone("SELECT * FROM usuarios WHERE id=? AND estatus='ACTIVO'", [$id]);
+    $u  = qone("SELECT * FROM usuarios WHERE id=?", [$id]);
     if (!$u) { flash("<div class='alert alert-warning'>Usuario no encontrado.</div>"); redirect('usuarios.listar'); }
     $roles = usuarios_roles_disponibles();
     $roles_asignados = [];
@@ -271,9 +335,13 @@ switch ($action) {
         <h1 class="h5 mb-3">Editar usuario</h1>
         <form method="post" action="?r=usuarios.actualizar&id=<?= (int)$id ?>">
           <?= csrf_field() ?>
-          <?= form_input('usuario', 'Usuario', $u['usuario'], ['required'=>true]) ?>
           <?= form_input('nombre', 'Nombre completo', $u['nombre'], ['required'=>true]) ?>
           <?= usuarios_puesto_select($u['puesto'] ?? '') ?>
+          <?= usuarios_jefe_select((int)($u['jefe_directo_id'] ?? 0) ?: null,$id) ?>
+          <div class="mb-3"><label class="form-label">Estatus laboral</label><select name="estatus" class="form-select"><option value="ACTIVO" <?= ($u['estatus'] ?? 'ACTIVO')==='ACTIVO'?'selected':'' ?>>Activo</option><option value="INACTIVO" <?= ($u['estatus'] ?? '')==='INACTIVO'?'selected':'' ?>>Inactivo / historico</option></select></div>
+          <?= usuarios_acceso_control(!empty($u['acceso_sistema'])) ?>
+          <?= form_input('usuario', 'Usuario para iniciar sesion', $u['usuario'] ?? '') ?>
+          <?= form_input('pass', 'Nueva contrasena (solo para cambiarla)', '', ['type'=>'password']) ?>
           <?php if (!empty($roles)): ?>
             <div class="mb-3">
               <label class="form-label">Roles</label>
@@ -312,16 +380,31 @@ switch ($action) {
     $usuario = trim($_POST['usuario'] ?? '');
     $nombre  = trim($_POST['nombre'] ?? '');
     $puesto  = trim($_POST['puesto'] ?? '');
-    if ($usuario === '' || $nombre === '') {
-      flash("<div class='alert alert-warning'>Completa los datos obligatorios.</div>");
+    $pass = (string)($_POST['pass'] ?? '');
+    $actual = qone("SELECT * FROM usuarios WHERE id=?", [$id]);
+    if (!$actual) { flash("<div class='alert alert-warning'>Usuario no encontrado.</div>"); redirect('usuarios.listar'); }
+    $roles_ids = array_map('intval', $_POST['roles'] ?? []);
+    $jefeId = (int)($_POST['jefe_directo_id'] ?? 0) ?: null;
+    $acceso = !empty($_POST['acceso_sistema']);
+    $estatus = strtoupper(trim((string)($_POST['estatus'] ?? 'ACTIVO'))) === 'INACTIVO' ? 'INACTIVO' : 'ACTIVO';
+    $errores = usuarios_validar_captura($id,$nombre,$puesto,$jefeId,$acceso,$usuario,$pass,$roles_ids,$actual,$estatus==='ACTIVO');
+    if ($errores) {
+      flash("<div class='alert alert-warning'>".e(implode(' ', $errores))."</div>");
       redirect("usuarios.editar&id={$id}");
     }
-    $puestosValidos = array_keys(auth_puestos());
-    if ($puesto !== '' && !in_array($puesto, $puestosValidos, true)) $puesto = '';
-    q("UPDATE usuarios SET usuario=?, nombre=?, puesto=? WHERE id=?",
-      [$usuario, $nombre, $puesto ?: null, $id]);
-    $roles_ids = array_map('intval', $_POST['roles'] ?? []);
-    usuarios_asignar_roles($id, $roles_ids);
+    $pdo = db();
+    try {
+      $pdo->beginTransaction();
+      $hash = $pass !== '' ? password_hash($pass,PASSWORD_DEFAULT) : ($actual['pass'] ?? null);
+      q("UPDATE usuarios SET usuario=?,nombre=?,pass=?,puesto=?,jefe_directo_id=?,acceso_sistema=?,estatus=? WHERE id=?", [
+        $acceso ? $usuario : null,$nombre,$hash,$puesto,$jefeId,$acceso ? 1 : 0,$estatus,$id,
+      ]);
+      usuarios_asignar_roles($id, $acceso ? $roles_ids : []);
+      $pdo->commit();
+    } catch (Throwable $e) {
+      if ($pdo->inTransaction()) $pdo->rollBack();
+      throw $e;
+    }
     flash("<div class='alert alert-success'>Usuario actualizado.</div>");
     redirect('usuarios.listar');
     break;
@@ -339,11 +422,16 @@ switch ($action) {
       flash("<div class='alert alert-warning'>No puedes eliminar tu propio usuario.</div>");
       redirect('usuarios.listar');
     }
-    $u = qone("SELECT id, usuario FROM usuarios WHERE id=? AND estatus='ACTIVO'", [$id]);
+    $u = qone("SELECT id,usuario FROM usuarios WHERE id=? AND estatus='ACTIVO'", [$id]);
     if (!$u) { flash("<div class='alert alert-warning'>Usuario no encontrado.</div>"); redirect('usuarios.listar'); }
+    $erroresDependientes = usuarios_directorio_validar_dependientes($id,(string)(qone("SELECT puesto FROM usuarios WHERE id=?",[$id])['puesto'] ?? ''),false);
+    if ($erroresDependientes) {
+      flash("<div class='alert alert-warning'>".e(implode(' ',$erroresDependientes))."</div>");
+      redirect('usuarios.listar');
+    }
     try {
       if (auth_roles_enabled()) q("DELETE FROM usuarios_roles WHERE usuario_id=?", [$id]);
-      q("UPDATE usuarios SET estatus='INACTIVO' WHERE id=?", [$id]);
+      q("UPDATE usuarios SET estatus='INACTIVO',acceso_sistema=0 WHERE id=?", [$id]);
       flash("<div class='alert alert-success'>Usuario eliminado.</div>");
     } catch (Exception $e) {
       flash("<div class='alert alert-danger'>No se pudo eliminar el usuario.</div>");
@@ -354,7 +442,7 @@ switch ($action) {
   // ── Cambiar contraseña ───────────────────────────────────────────────────────
   case 'cambiar_password':
     $id = (int)($_GET['id'] ?? 0);
-    $u  = qone("SELECT id, usuario, nombre FROM usuarios WHERE id=? AND estatus='ACTIVO'", [$id]);
+    $u  = qone("SELECT id,usuario,nombre,acceso_sistema FROM usuarios WHERE id=? AND estatus='ACTIVO' AND acceso_sistema=1 AND usuario IS NOT NULL", [$id]);
     if (!$u) { flash("<div class='alert alert-warning'>Usuario no encontrado.</div>"); redirect('usuarios.listar'); }
     if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       try { csrf_verify(); } catch (RuntimeException $e) {
@@ -724,5 +812,119 @@ switch ($action) {
       flash("<div class='alert alert-danger'>No se pudieron actualizar los permisos: ".e($e->getMessage())."</div>");
     }
     redirect('usuarios.permisos&rol_id='.$rol_id);
+    break;
+
+  // ── Conciliacion del directorio historico ────────────────────────────────────
+  case 'directorio':
+    $migracionLista = db_table_exists('usuarios_personal_legacy');
+    $directorioActivado = db_column_exists('futuro_contratos','id_usuario_vendedor');
+    $personal = [];
+    if ($migracionLista && db_table_exists('futuro_personal')) {
+      $personal = qall("
+        SELECT fp.id_personal,fp.id AS usuario_legacy_id,
+               TRIM(CONCAT(COALESCE(fp.nombre,''),' ',COALESCE(fp.apellido_p,''),' ',COALESCE(fp.apellido_m,''))) AS nombre_personal,
+               COALESCE(fp.estatus,'') AS estatus_personal,
+               upl.id_usuario,u.nombre AS nombre_usuario,u.puesto,u.estatus AS estatus_usuario,
+               upl.tipo_vinculo,upl.estado,upl.notas,
+               (SELECT COUNT(*) FROM futuro_personal fpd WHERE fpd.id=fp.id AND fp.id IS NOT NULL) AS enlaces_legacy_repetidos,
+               (SELECT COUNT(*) FROM usuarios ud
+                WHERE ud.id<>u.id
+                  AND UPPER(TRIM(CONVERT(ud.nombre USING utf8mb4))) COLLATE utf8mb4_general_ci
+                    = UPPER(TRIM(CONVERT(u.nombre USING utf8mb4))) COLLATE utf8mb4_general_ci) AS posibles_duplicados,
+               (SELECT COUNT(*) FROM futuro_contrato_vendedor x WHERE x.id_personal=fp.id_personal) AS contratos,
+               (SELECT COUNT(*) FROM futuro_abono_cobrador x WHERE x.id_personal=fp.id_personal) AS abonos,
+               (SELECT COUNT(*) FROM futuro_gestion x WHERE x.id_personal=fp.id_personal) AS gestiones
+        FROM futuro_personal fp
+        LEFT JOIN usuarios_personal_legacy upl ON upl.id_personal=fp.id_personal
+        LEFT JOIN usuarios u ON u.id=upl.id_usuario
+        ORDER BY (upl.id_usuario IS NULL) DESC,nombre_personal,fp.id_personal
+      ");
+    }
+    $pendientesMapeo = count(array_filter($personal, fn($r) => empty($r['id_usuario'])));
+    $posiblesDuplicados = count(array_filter($personal, fn($r) => (int)($r['posibles_duplicados'] ?? 0) > 0));
+    $pendientesJerarquia = [];
+    foreach (usuarios_directorio_activos(['vendedor']) as $vendedor) {
+      $j = usuarios_directorio_jerarquia_comercial((int)$vendedor['id']);
+      if ($j['errores']) $pendientesJerarquia[] = ['usuario'=>$vendedor,'errores'=>$j['errores']];
+    }
+    $usuariosOpts = usuarios_directorio_opciones();
+
+    ob_start(); ?>
+    <div class="d-flex justify-content-between align-items-center mb-3">
+      <div><h1 class="h4 mb-1">Conciliacion de personal</h1><div class="text-muted small">Esta pantalla es la unica que consulta el archivo historico de personal.</div></div>
+      <a href="?r=usuarios.listar" class="btn btn-outline-secondary btn-sm">Volver a usuarios</a>
+    </div>
+    <?php if (!$migracionLista): ?>
+      <div class="alert alert-warning">Ejecuta primero la migracion <strong>Usuarios - etapa 1</strong> desde el Centro de migraciones.</div>
+    <?php else: ?>
+      <div class="row g-2 mb-3">
+        <div class="col-md-3"><div class="border p-3"><div class="small text-muted">Personal sin usuario</div><div class="h4 mb-0"><?= $pendientesMapeo ?></div></div></div>
+        <div class="col-md-3"><div class="border p-3"><div class="small text-muted">Vendedores sin cadena valida</div><div class="h4 mb-0"><?= count($pendientesJerarquia) ?></div></div></div>
+        <div class="col-md-3"><div class="border p-3"><div class="small text-muted">Posibles duplicados</div><div class="h4 mb-0"><?= $posiblesDuplicados ?></div></div></div>
+        <div class="col-md-3"><div class="border p-3"><div class="small text-muted">Estado de activacion</div><div class="fw-semibold <?= ($pendientesMapeo || $pendientesJerarquia) ? 'text-danger' : 'text-success' ?>"><?= ($pendientesMapeo || $pendientesJerarquia) ? 'Bloqueada' : 'Lista' ?></div></div></div>
+      </div>
+      <?php if ($directorioActivado): ?><div class="alert alert-info py-2">La etapa 2 ya esta activa. Los enlaces historicos son de solo lectura; las correcciones se realizan sobre Usuarios.</div><?php endif; ?>
+
+      <?php if ($pendientesJerarquia): ?>
+        <div class="alert alert-warning">
+          <div class="fw-semibold mb-1">Jerarquias pendientes</div>
+          <?php foreach ($pendientesJerarquia as $item): ?>
+            <div><a href="?r=usuarios.editar&id=<?= (int)$item['usuario']['id'] ?>"><?= e($item['usuario']['nombre']) ?></a>: <?= e(implode(' ', $item['errores'])) ?></div>
+          <?php endforeach; ?>
+        </div>
+      <?php endif; ?>
+
+      <div class="table-responsive">
+        <table class="table table-sm table-striped align-middle">
+          <thead><tr><th>Personal historico</th><th>Usuario enlazado</th><th>Referencias</th><th>Origen</th><th style="min-width:320px">Corregir enlace</th></tr></thead>
+          <tbody>
+          <?php foreach ($personal as $row): ?>
+            <tr class="<?= empty($row['id_usuario']) ? 'table-warning' : '' ?>">
+              <td><div><?= e($row['nombre_personal']) ?></div><div class="small text-muted">#<?= (int)$row['id_personal'] ?> · <?= e($row['estatus_personal']) ?></div></td>
+              <td><?php if ($row['id_usuario']): ?><a href="?r=usuarios.editar&id=<?= (int)$row['id_usuario'] ?>"><?= e($row['nombre_usuario']) ?></a><div class="small text-muted"><?= e(auth_puestos()[$row['puesto']] ?? $row['puesto']) ?></div><?php if ((int)($row['posibles_duplicados'] ?? 0)>0): ?><span class="badge text-bg-warning">Posible nombre duplicado</span><?php endif; ?><?php else: ?><span class="text-danger">Pendiente</span><?php endif; ?></td>
+              <td class="small">Contratos <?= (int)$row['contratos'] ?> · Abonos <?= (int)$row['abonos'] ?> · Gestiones <?= (int)$row['gestiones'] ?></td>
+              <td><span class="badge text-bg-light"><?= e($row['tipo_vinculo'] ?: 'sin enlace') ?></span><?php if ((int)$row['enlaces_legacy_repetidos']>1): ?><span class="badge text-bg-warning ms-1">Enlace legado duplicado</span><?php endif; ?><?php if ($row['notas']): ?><div class="small text-muted"><?= e($row['notas']) ?></div><?php endif; ?></td>
+              <td>
+                <?php if (!$directorioActivado): ?><form method="post" action="?r=usuarios.directorio_guardar_mapeo" class="d-flex gap-1">
+                  <?= csrf_field() ?><input type="hidden" name="id_personal" value="<?= (int)$row['id_personal'] ?>">
+                  <select name="id_usuario" class="form-select form-select-sm" required><option value="">Selecciona usuario</option><?php foreach ($usuariosOpts as $uid=>$nombre): ?><option value="<?= (int)$uid ?>" <?= (int)$row['id_usuario']===(int)$uid?'selected':'' ?>><?= e($nombre) ?></option><?php endforeach; ?></select>
+                  <button class="btn btn-primary btn-sm">Vincular</button>
+                </form><?php else: ?><span class="text-muted small">Enlace congelado</span><?php endif; ?>
+              </td>
+            </tr>
+          <?php endforeach; ?>
+          </tbody>
+        </table>
+      </div>
+    <?php endif;
+    render('Conciliacion de personal', ob_get_clean());
+    break;
+
+  case 'directorio_guardar_mapeo':
+    if ($_SERVER['REQUEST_METHOD'] !== 'POST') redirect('usuarios.directorio');
+    csrf_verify();
+    $idPersonal = (int)($_POST['id_personal'] ?? 0);
+    $idUsuario = (int)($_POST['id_usuario'] ?? 0);
+    if (db_column_exists('futuro_contratos','id_usuario_vendedor')) {
+      flash("<div class='alert alert-warning'>La conciliacion ya fue activada y los enlaces historicos estan congelados.</div>");
+      redirect('usuarios.directorio');
+    }
+    if (!db_table_exists('usuarios_personal_legacy') || $idPersonal <= 0 || $idUsuario <= 0) {
+      flash("<div class='alert alert-warning'>Selecciona un enlace valido.</div>");
+      redirect('usuarios.directorio');
+    }
+    $ocupado = qone("SELECT id_personal FROM usuarios_personal_legacy WHERE id_usuario=? AND id_personal<>?", [$idUsuario,$idPersonal]);
+    if ($ocupado) {
+      flash("<div class='alert alert-danger'>Ese usuario ya esta enlazado con otro registro historico. Revisa el posible duplicado antes de continuar.</div>");
+      redirect('usuarios.directorio');
+    }
+    $anterior = qone("SELECT id_usuario FROM usuarios_personal_legacy WHERE id_personal=?", [$idPersonal]);
+    q("INSERT INTO usuarios_personal_legacy (id_personal,id_usuario,tipo_vinculo,estado,notas) VALUES (?,?,'manual','conciliado','Enlace confirmado desde Usuarios') ON DUPLICATE KEY UPDATE id_usuario=VALUES(id_usuario),tipo_vinculo='manual',estado='conciliado',notas=VALUES(notas),updated_at=CURRENT_TIMESTAMP", [$idPersonal,$idUsuario]);
+    $idAnterior = (int)($anterior['id_usuario'] ?? 0);
+    if ($idAnterior > 0 && $idAnterior !== $idUsuario) {
+      q("UPDATE usuarios u SET u.estatus='INACTIVO',u.acceso_sistema=0 WHERE u.id=? AND u.acceso_sistema=0 AND NOT EXISTS (SELECT 1 FROM usuarios_personal_legacy x WHERE x.id_usuario=u.id)", [$idAnterior]);
+    }
+    flash("<div class='alert alert-success'>Enlace actualizado.</div>");
+    redirect('usuarios.directorio');
     break;
 }

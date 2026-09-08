@@ -6,16 +6,8 @@
  * Puestos de trabajo disponibles en el sistema.
  */
 function auth_puestos(): array {
-  return [
-    'administrador' => 'Administrador',
-    'coordinador'   => 'Coordinador',
-    'vendedor'      => 'Vendedor',
-    'cobrador'      => 'Cobrador',
-    'auxiliar'      => 'Auxiliar',
-    'operario'      => 'Operario',
-    'recepcionista' => 'Recepcionista',
-    'otro'          => 'Otro',
-  ];
+  if (function_exists('usuarios_directorio_puestos')) return usuarios_directorio_puestos();
+  return ['administrador'=>'Administrador','coordinador'=>'Coordinador','gerente'=>'Gerente','lider'=>'Lider','vendedor'=>'Vendedor','cobrador'=>'Cobrador','auxiliar'=>'Auxiliar','operario'=>'Operario','recepcionista'=>'Recepcionista','otro'=>'Otro'];
 }
 
 /**
@@ -217,11 +209,23 @@ function logged_in(){return !empty($_SESSION['user']);}
 
 function current_user(){return $_SESSION['user'] ?? null;}
 
-function require_login(){if(!logged_in())redirect('auth.login');}
+function require_login(){
+  if(!logged_in()) redirect('auth.login');
+  $id=(int)($_SESSION['user']['id'] ?? 0);
+  $where=db_column_exists('usuarios','acceso_sistema')
+    ? "id=? AND UPPER(COALESCE(estatus,'ACTIVO'))='ACTIVO' AND acceso_sistema=1"
+    : "id=? AND UPPER(COALESCE(estatus,'ACTIVO'))='ACTIVO'";
+  $vigente=$id>0 ? qone("SELECT * FROM usuarios WHERE {$where} LIMIT 1",[$id]) : null;
+  if(!$vigente){ logout(); redirect('auth.login'); }
+  $_SESSION['user']=$vigente;
+}
 
 function login($usuario,$pass){
-  $u=qone("SELECT * FROM usuarios WHERE usuario=?",[$usuario]);
-  if($u && password_verify($pass,$u['pass'])){
+  $where = db_column_exists('usuarios', 'acceso_sistema')
+    ? "usuario=? AND UPPER(COALESCE(estatus,'ACTIVO'))='ACTIVO' AND acceso_sistema=1"
+    : "usuario=? AND UPPER(COALESCE(estatus,'ACTIVO'))='ACTIVO'";
+  $u=qone("SELECT * FROM usuarios WHERE {$where} LIMIT 1",[$usuario]);
+  if($u && !empty($u['pass']) && password_verify($pass,$u['pass'])){
     $_SESSION['user']=$u;
     return true;
   }
