@@ -46,9 +46,9 @@ try {
     (86,'Josue','Cobro','',0,0,'2020-01-01',2,0,1,'ACTIVO','',71)");
 
   $pdo->exec("CREATE TABLE futuro_contratos (id_contrato INT PRIMARY KEY,costo_final DECIMAL(12,2),estatus VARCHAR(20)) ENGINE=InnoDB");
-  $pdo->exec("INSERT INTO futuro_contratos VALUES (100,1000,'ACTIVO'),(101,1000,'ACTIVO')");
+  $pdo->exec("INSERT INTO futuro_contratos VALUES (100,1000,'ACTIVO'),(101,1000,'ACTIVO'),(102,1000,'ACTIVO'),(103,1000,'ACTIVO')");
   $pdo->exec("CREATE TABLE futuro_contrato_vendedor (id_cont_vend INT AUTO_INCREMENT PRIMARY KEY,id_contrato INT,id_personal INT NOT NULL) ENGINE=InnoDB");
-  $pdo->exec("INSERT INTO futuro_contrato_vendedor (id_contrato,id_personal) VALUES (100,10),(101,11)");
+  $pdo->exec("INSERT INTO futuro_contrato_vendedor (id_contrato,id_personal) VALUES (100,10),(101,11),(103,3)");
   $pdo->exec("CREATE TABLE futuro_contrato_lider (id_cont_lider INT AUTO_INCREMENT PRIMARY KEY,id_contrato INT,id_personal INT NOT NULL) ENGINE=InnoDB");
   $pdo->exec("CREATE TABLE futuro_contrato_jefecuad (id_cont_jefecuad INT AUTO_INCREMENT PRIMARY KEY,id_contrato INT,id_personal INT NOT NULL) ENGINE=InnoDB");
   $pdo->exec("CREATE TABLE futuro_contrato_cobrador (id_cont_cob INT AUTO_INCREMENT PRIMARY KEY,id_contrato INT,id_personal INT NOT NULL) ENGINE=InnoDB");
@@ -56,7 +56,8 @@ try {
   $pdo->exec("INSERT INTO futuro_abonos (id_contrato,cant_abono) VALUES (100,200),(101,300)");
   $pdo->exec("CREATE TABLE futuro_abono_cobrador (id_abono_cobrador INT AUTO_INCREMENT PRIMARY KEY,id_abono INT,id_personal INT NOT NULL) ENGINE=InnoDB");
   $pdo->exec("CREATE TABLE futuro_gestion (id_gestion INT AUTO_INCREMENT PRIMARY KEY,id_contrato INT,id_personal INT NOT NULL) ENGINE=InnoDB");
-  $pdo->exec("CREATE TABLE futuro_comision_semanal (id_bono_sem INT AUTO_INCREMENT PRIMARY KEY,id_comisionista INT NOT NULL,cant_com_final DECIMAL(12,2)) ENGINE=InnoDB");
+  $pdo->exec("CREATE TABLE futuro_comision_semanal (id_bono_sem INT AUTO_INCREMENT PRIMARY KEY,id_comisionista INT NOT NULL,comisionista VARCHAR(20) NOT NULL,cant_com_final DECIMAL(12,2)) ENGINE=InnoDB");
+  $pdo->exec("INSERT INTO futuro_comision_semanal (id_comisionista,comisionista,cant_com_final) VALUES (0,'LIDER',48)");
   $pdo->exec("CREATE TABLE futuro_bono_4ventas (id_bono_4ventas INT AUTO_INCREMENT PRIMARY KEY,id_personal INT NOT NULL) ENGINE=InnoDB");
   $pdo->exec("CREATE TABLE futuro_bono_reco (id_bono_reco INT AUTO_INCREMENT PRIMARY KEY,id_personal INT NOT NULL,recomendado INT NOT NULL) ENGINE=InnoDB");
   $pdo->exec("CREATE TABLE futuro_contrato_promocion_condiciones (
@@ -74,34 +75,38 @@ try {
   udm_assert((int)$pdo->query("SELECT COUNT(*) FROM usuarios_personal_legacy WHERE id_usuario=71")->fetchColumn()===0,'El enlace duplicado a pantalla no debio conservarse.');
   udm_assert((int)$pdo->query("SELECT COUNT(*) FROM usuarios WHERE acceso_sistema=0")->fetchColumn()===4,'Los faltantes deben ser usuarios sin acceso.');
 
-  $blocked=false;
-  try { udm_run($pdo,'2026_08_usuarios_directorio_etapa2.sql'); }
-  catch (PDOException $e) { $blocked=str_contains($e->getMessage(),'cadena vendedor-lider-gerente') || str_contains($e->getMessage(),'contratos vigentes'); }
-  udm_assert($blocked,'La etapa 2 debio bloquear la jerarquia pendiente.');
-
   $mario=(int)$pdo->query("SELECT id FROM usuarios WHERE usuario='ma.ureña'")->fetchColumn();
+  $jessica=(int)$pdo->query("SELECT id FROM usuarios WHERE usuario='je.ureña'")->fetchColumn();
   $ventaJessica=(int)$pdo->query("SELECT id_usuario FROM usuarios_personal_legacy WHERE id_personal=11")->fetchColumn();
-  $pdo->exec("UPDATE usuarios SET jefe_directo_id={$mario} WHERE id={$ventaJessica}");
   $usuariosAntes=(int)$pdo->query('SELECT COUNT(*) FROM usuarios')->fetchColumn();
   udm_run($pdo,'2026_08_usuarios_directorio_etapa1.sql');
-  udm_assert((int)$pdo->query("SELECT jefe_directo_id FROM usuarios WHERE id={$ventaJessica}")->fetchColumn()===$mario,'Repetir etapa 1 no debe borrar una conciliacion manual.');
   udm_assert((int)$pdo->query('SELECT COUNT(*) FROM usuarios')->fetchColumn()===$usuariosAntes,'Repetir etapa 1 duplico usuarios.');
 
-  $jessica=(int)$pdo->query("SELECT id FROM usuarios WHERE usuario='je.ureña'")->fetchColumn();
-  $pdo->exec("UPDATE usuarios SET jefe_directo_id={$mario} WHERE id={$jessica}");
+  $cobrador84=(int)$pdo->query("SELECT id_usuario FROM usuarios_personal_legacy WHERE id_personal=84")->fetchColumn();
+  $cobrador86=(int)$pdo->query("SELECT id_usuario FROM usuarios_personal_legacy WHERE id_personal=86")->fetchColumn();
+  $pdo->exec("UPDATE usuarios SET jefe_directo_id={$cobrador86} WHERE id={$cobrador84}");
+  $pdo->exec("UPDATE usuarios SET jefe_directo_id={$cobrador84} WHERE id={$cobrador86}");
   $cycleBlocked=false;
   try { udm_run($pdo,'2026_08_usuarios_directorio_etapa2.sql'); }
   catch (PDOException $e) { $cycleBlocked=str_contains($e->getMessage(),'ciclo en la jerarquia'); }
   udm_assert($cycleBlocked,'La etapa 2 debio bloquear un ciclo fuera de la cadena inmediata del vendedor.');
-  $pdo->exec("UPDATE usuarios SET jefe_directo_id=NULL WHERE id={$jessica}");
+  $pdo->exec("UPDATE usuarios SET jefe_directo_id=NULL WHERE id IN ({$cobrador84},{$cobrador86})");
 
   udm_run($pdo,'2026_08_usuarios_directorio_etapa2.sql');
-  udm_assert((int)$pdo->query("SELECT COUNT(*) FROM futuro_contratos WHERE id_usuario_vendedor IS NOT NULL AND id_usuario_lider IS NOT NULL AND id_usuario_gerente IS NOT NULL")->fetchColumn()===2,'No se congelo la jerarquia en contratos.');
+  udm_assert((int)$pdo->query("SELECT jefe_directo_id FROM usuarios WHERE id={$ventaJessica}")->fetchColumn()===$jessica,'El vendedor sin lider debio asignarse a je.ureña.');
+  udm_assert((int)$pdo->query("SELECT COUNT(*) FROM futuro_contratos WHERE id_usuario_vendedor IS NOT NULL AND id_usuario_lider IS NOT NULL AND id_usuario_gerente IS NOT NULL")->fetchColumn()===4,'No se congelo la jerarquia en contratos.');
+  $contratoRespaldo=$pdo->query('SELECT id_usuario_lider,id_usuario_gerente FROM futuro_contratos WHERE id_contrato=101')->fetch(PDO::FETCH_ASSOC);
+  udm_assert((int)$contratoRespaldo['id_usuario_lider']===$jessica && (int)$contratoRespaldo['id_usuario_gerente']===$jessica,'je.ureña debe cubrir lider y gerente en el contrato sin jerarquia.');
+  $sinVendedor=$pdo->query('SELECT id_usuario_vendedor,id_usuario_lider,id_usuario_gerente FROM futuro_contratos WHERE id_contrato=102')->fetch(PDO::FETCH_ASSOC);
+  udm_assert(count(array_unique(array_map('intval',$sinVendedor)))===1 && (int)$sinVendedor['id_usuario_vendedor']===$jessica,'El contrato historico sin vendedor debe usar a je.ureña como respaldo completo.');
+  $vendedorConOtroPuesto=$pdo->query('SELECT id_usuario_vendedor,id_usuario_lider,id_usuario_gerente FROM futuro_contratos WHERE id_contrato=103')->fetch(PDO::FETCH_ASSOC);
+  udm_assert((int)$vendedorConOtroPuesto['id_usuario_vendedor']===$jessica && (int)$vendedorConOtroPuesto['id_usuario_lider']===$jessica && (int)$vendedorConOtroPuesto['id_usuario_gerente']===$jessica,'La identidad historica del vendedor debe conservarse aunque hoy tenga otro puesto.');
   udm_assert((int)$pdo->query("SELECT COUNT(*) FROM futuro_contrato_promocion_condiciones WHERE id_usuario_vendedor IS NOT NULL AND id_usuario_lider IS NOT NULL AND id_usuario_gerente IS NOT NULL")->fetchColumn()===1,'No se conservaron los beneficiarios de condiciones historicas.');
   udm_assert((int)$pdo->query("SELECT COUNT(*) FROM futuro_abono_distribucion WHERE id_usuario IS NOT NULL")->fetchColumn()===1,'No se migro el beneficiario de distribuciones historicas.');
+  udm_assert((int)$pdo->query("SELECT id_usuario_comisionista FROM futuro_comision_semanal WHERE id_comisionista=0")->fetchColumn()===$jessica,'La comision historica de lider sin identidad debe asignarse a je.ureña.');
   udm_assert((float)$pdo->query('SELECT SUM(cant_abono) FROM futuro_abonos')->fetchColumn()===500.0,'La migracion altero los importes.');
   udm_run($pdo,'2026_08_usuarios_directorio_etapa2.sql');
-  udm_assert((int)$pdo->query('SELECT COUNT(*) FROM futuro_contratos')->fetchColumn()===2,'Repetir etapa 2 altero contratos.');
+  udm_assert((int)$pdo->query('SELECT COUNT(*) FROM futuro_contratos')->fetchColumn()===4,'Repetir etapa 2 altero contratos.');
 
   echo "OK: conciliacion, bloqueo, backfill e idempotencia de usuarios.\n";
 } finally {

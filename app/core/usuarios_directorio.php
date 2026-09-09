@@ -26,6 +26,29 @@ function usuarios_directorio_schema_listo(): bool {
     && db_column_exists('usuarios', 'acceso_sistema');
 }
 
+function usuarios_directorio_respaldo_id(): int {
+  if (isset($GLOBALS['usuarios_directorio_respaldo_id'])) {
+    return (int)$GLOBALS['usuarios_directorio_respaldo_id'];
+  }
+  static $id = null;
+  if ($id !== null) return $id;
+  if (!usuarios_directorio_schema_listo()) return 0;
+  $row = qone(
+    "SELECT id FROM usuarios
+     WHERE usuario=? AND puesto='gerente'
+       AND UPPER(COALESCE(estatus,'ACTIVO'))='ACTIVO'
+     LIMIT 1",
+    ['je.ureña']
+  );
+  $id = (int)($row['id'] ?? 0);
+  return $id;
+}
+
+function usuarios_directorio_es_respaldo(int $idUsuario): bool {
+  $idRespaldo = usuarios_directorio_respaldo_id();
+  return $idRespaldo > 0 && $idUsuario === $idRespaldo;
+}
+
 function usuarios_directorio_usuario(int $idUsuario, bool $soloActivo = false): ?array {
   if ($idUsuario <= 0 || !usuarios_directorio_schema_listo()) return null;
   $activo = $soloActivo ? " AND UPPER(COALESCE(estatus,'ACTIVO'))='ACTIVO'" : '';
@@ -49,7 +72,11 @@ function usuarios_directorio_activos(array $puestos = []): array {
   $params = [];
   $where = "UPPER(COALESCE(u.estatus,'ACTIVO'))='ACTIVO'";
   if ($puestos) {
-    $where .= ' AND u.puesto IN ('.implode(',', array_fill(0, count($puestos), '?')).')';
+    $filtroPuestos = 'u.puesto IN ('.implode(',', array_fill(0, count($puestos), '?')).')';
+    if (in_array('lider', $puestos, true)) {
+      $filtroPuestos = '('.$filtroPuestos." OR u.usuario='je.ureña')";
+    }
+    $where .= ' AND '.$filtroPuestos;
     $params = $puestos;
   }
   return qall(
@@ -104,9 +131,10 @@ function usuarios_directorio_validar_asignacion(
   }
   if ($idJefe && $idJefe > 0) {
     $jefe = usuarios_directorio_usuario($idJefe, true);
+    $jefeEsRespaldo = $esperado === 'lider' && usuarios_directorio_es_respaldo($idJefe);
     if (!$jefe) {
       $errores[] = 'El jefe directo debe ser un usuario activo.';
-    } elseif ($esperado !== null && ($jefe['puesto'] ?? '') !== $esperado) {
+    } elseif ($esperado !== null && ($jefe['puesto'] ?? '') !== $esperado && !$jefeEsRespaldo) {
       $errores[] = 'El jefe directo de '.($puesto === 'vendedor' ? 'un vendedor' : 'un lider').' debe tener puesto de '.($esperado === 'lider' ? 'lider' : 'gerente').'.';
     }
 
@@ -144,21 +172,22 @@ function usuarios_directorio_jerarquia_comercial(int $idVendedor): array {
 
   $idLider = (int)($vendedor['jefe_directo_id'] ?? 0);
   $lider = usuarios_directorio_usuario($idLider, true);
+  $liderEsRespaldo = usuarios_directorio_es_respaldo($idLider);
   $result['id_lider'] = $idLider ?: null;
   $result['lider'] = $lider;
-  if (!$lider || ($lider['puesto'] ?? '') !== 'lider') {
+  if (!$lider || (($lider['puesto'] ?? '') !== 'lider' && !$liderEsRespaldo)) {
     $result['errores'][] = 'El vendedor no tiene un lider activo configurado como jefe directo.';
     return $result;
   }
 
-  $idGerente = (int)($lider['jefe_directo_id'] ?? 0);
-  $gerente = usuarios_directorio_usuario($idGerente, true);
+  $idGerente = $liderEsRespaldo ? $idLider : (int)($lider['jefe_directo_id'] ?? 0);
+  $gerente = $liderEsRespaldo ? $lider : usuarios_directorio_usuario($idGerente, true);
   $result['id_gerente'] = $idGerente ?: null;
   $result['gerente'] = $gerente;
   if (!$gerente || ($gerente['puesto'] ?? '') !== 'gerente') {
     $result['errores'][] = 'El lider no tiene un gerente activo configurado como jefe directo.';
   }
-  if ($idVendedor === $idLider || $idVendedor === $idGerente || $idLider === $idGerente) {
+  if ($idVendedor === $idLider || $idVendedor === $idGerente || ($idLider === $idGerente && !$liderEsRespaldo)) {
     $result['errores'][] = 'La jerarquia comercial contiene una asignacion circular.';
   }
   $result['errores'] = array_values(array_unique($result['errores']));
@@ -176,7 +205,10 @@ function usuarios_directorio_validar_dependientes(int $idUsuario, string $puesto
   foreach ($dependientes as $dependiente) {
     $puestoDependiente = (string)($dependiente['puesto'] ?? '');
     $puestoRequerido = usuarios_directorio_puesto_jefe_esperado($puestoDependiente);
-    if (!$activo || ($puestoRequerido !== null && $puesto !== $puestoRequerido)) {
+    $cubreComoRespaldo = $puestoRequerido === 'lider'
+      && $puesto === 'gerente'
+      && usuarios_directorio_es_respaldo($idUsuario);
+    if (!$activo || ($puestoRequerido !== null && $puesto !== $puestoRequerido && !$cubreComoRespaldo)) {
       $errores[] = 'No puedes inactivar o cambiar el puesto mientras '.trim((string)$dependiente['nombre']).' siga asignado como subordinado activo.';
     }
   }

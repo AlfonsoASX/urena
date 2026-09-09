@@ -5,7 +5,9 @@ $directorioUsuarios = [
   2 => ['id'=>2,'usuario'=>null,'nombre'=>'Lider Uno','puesto'=>'lider','jefe_directo_id'=>3,'acceso_sistema'=>0,'estatus'=>'ACTIVO'],
   3 => ['id'=>3,'usuario'=>null,'nombre'=>'Gerente Uno','puesto'=>'gerente','jefe_directo_id'=>null,'acceso_sistema'=>0,'estatus'=>'ACTIVO'],
   4 => ['id'=>4,'usuario'=>null,'nombre'=>'Lider Inactivo','puesto'=>'lider','jefe_directo_id'=>3,'acceso_sistema'=>0,'estatus'=>'INACTIVO'],
+  5 => ['id'=>5,'usuario'=>'venta.respaldo','nombre'=>'Venta Respaldo','puesto'=>'vendedor','jefe_directo_id'=>3,'acceso_sistema'=>1,'estatus'=>'ACTIVO'],
 ];
+$GLOBALS['usuarios_directorio_respaldo_id'] = 3;
 
 function db_column_exists(string $table, string $column): bool { return $table==='usuarios'; }
 function qone(string $sql, array $params=[]): ?array {
@@ -31,6 +33,12 @@ function directorio_assert(bool $condition, string $message): void {
 $valida = usuarios_directorio_jerarquia_comercial(1);
 directorio_assert(!$valida['errores'], 'La cadena vendedor-lider-gerente valida fue rechazada.');
 directorio_assert($valida['id_lider']===2 && $valida['id_gerente']===3, 'La cadena no resolvio los usuarios correctos.');
+
+$respaldo = usuarios_directorio_jerarquia_comercial(5);
+directorio_assert(!$respaldo['errores'], 'Se rechazo al gerente autorizado como lider de respaldo.');
+directorio_assert($respaldo['id_lider']===3 && $respaldo['id_gerente']===3, 'El respaldo no resolvio el mismo usuario como lider y gerente.');
+$asignacionRespaldo = usuarios_directorio_validar_asignacion(5,'vendedor',3);
+directorio_assert($asignacionRespaldo===[], 'No se permitio asignar el lider de respaldo al vendedor.');
 
 $directorioUsuarios[1]['jefe_directo_id']=4;
 $inactiva = usuarios_directorio_jerarquia_comercial(1);

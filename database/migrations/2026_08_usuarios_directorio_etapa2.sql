@@ -1,6 +1,45 @@
 -- @name: Usuarios como directorio unico - etapa 2
--- @description: Activa usuarios como unica referencia operativa. Se detiene antes de alterar si existe personal sin usuario o una jerarquia comercial incompleta.
+-- @description: Activa usuarios como unica referencia operativa. je.ureña cubre como lider y gerente los casos sin jerarquia configurada.
 -- @backup: usuarios,usuarios_personal_legacy,futuro_contratos,futuro_contrato_vendedor,futuro_contrato_lider,futuro_contrato_jefecuad,futuro_contrato_cobrador,futuro_abono_cobrador,futuro_gestion,futuro_comision_semanal,futuro_bono_4ventas,futuro_bono_reco,futuro_contrato_promocion_condiciones,futuro_abono_distribucion,cortes_pagos
+
+DELIMITER $$
+DROP PROCEDURE IF EXISTS usuarios_directorio_asignar_respaldo$$
+CREATE PROCEDURE usuarios_directorio_asignar_respaldo()
+BEGIN
+  DECLARE v_respaldo INT DEFAULT 0;
+  SELECT COALESCE(MAX(id),0) INTO v_respaldo
+  FROM usuarios
+  WHERE usuario='je.ureña'
+    AND UPPER(COALESCE(estatus,'ACTIVO'))='ACTIVO';
+
+  IF v_respaldo=0 THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Activacion bloqueada: no existe el usuario activo je.ureña.';
+  END IF;
+
+  UPDATE usuarios SET puesto='gerente',jefe_directo_id=NULL WHERE id=v_respaldo;
+
+  UPDATE usuarios vendedor
+  LEFT JOIN usuarios lider ON lider.id=vendedor.jefe_directo_id
+  SET vendedor.jefe_directo_id=v_respaldo
+  WHERE vendedor.puesto='vendedor'
+    AND UPPER(COALESCE(vendedor.estatus,'ACTIVO'))='ACTIVO'
+    AND (lider.id IS NULL
+         OR UPPER(COALESCE(lider.estatus,'ACTIVO'))<>'ACTIVO'
+         OR (lider.puesto<>'lider' AND lider.id<>v_respaldo));
+
+  UPDATE usuarios lider
+  LEFT JOIN usuarios gerente ON gerente.id=lider.jefe_directo_id
+  SET lider.jefe_directo_id=v_respaldo
+  WHERE lider.puesto='lider'
+    AND UPPER(COALESCE(lider.estatus,'ACTIVO'))='ACTIVO'
+    AND lider.id<>v_respaldo
+    AND (gerente.id IS NULL
+         OR gerente.puesto<>'gerente'
+         OR UPPER(COALESCE(gerente.estatus,'ACTIVO'))<>'ACTIVO');
+END$$
+CALL usuarios_directorio_asignar_respaldo()$$
+DROP PROCEDURE usuarios_directorio_asignar_respaldo$$
+DELIMITER ;
 
 DELIMITER $$
 DROP PROCEDURE IF EXISTS usuarios_directorio_validar_activacion$$
@@ -11,11 +50,20 @@ BEGIN
   DECLARE v_actual INT DEFAULT 0;
   DECLARE v_nivel INT DEFAULT 0;
   DECLARE v_fin INT DEFAULT 0;
+  DECLARE v_respaldo INT DEFAULT 0;
   DECLARE cur_usuarios CURSOR FOR SELECT id FROM usuarios WHERE jefe_directo_id IS NOT NULL ORDER BY id;
   DECLARE CONTINUE HANDLER FOR NOT FOUND SET v_fin=1;
 
   IF NOT EXISTS (SELECT 1 FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='usuarios_personal_legacy') THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Ejecuta primero Usuarios como directorio unico - etapa 1.';
+  END IF;
+
+  SELECT COALESCE(MAX(id),0) INTO v_respaldo
+  FROM usuarios
+  WHERE usuario='je.ureña' AND puesto='gerente'
+    AND UPPER(COALESCE(estatus,'ACTIVO'))='ACTIVO';
+  IF v_respaldo=0 THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Activacion bloqueada: je.ureña debe ser un gerente activo.';
   END IF;
 
   SELECT COUNT(*) INTO v_pendientes
@@ -34,7 +82,7 @@ BEGIN
     UNION ALL SELECT COUNT(*) FROM futuro_contrato_cobrador r LEFT JOIN usuarios_personal_legacy m ON m.id_personal=r.id_personal WHERE r.id_personal IS NOT NULL AND m.id_usuario IS NULL
     UNION ALL SELECT COUNT(*) FROM futuro_abono_cobrador r LEFT JOIN usuarios_personal_legacy m ON m.id_personal=r.id_personal WHERE r.id_personal IS NOT NULL AND m.id_usuario IS NULL
     UNION ALL SELECT COUNT(*) FROM futuro_gestion r LEFT JOIN usuarios_personal_legacy m ON m.id_personal=r.id_personal WHERE r.id_personal IS NOT NULL AND m.id_usuario IS NULL
-    UNION ALL SELECT COUNT(*) FROM futuro_comision_semanal r LEFT JOIN usuarios_personal_legacy m ON m.id_personal=r.id_comisionista WHERE r.id_comisionista IS NOT NULL AND m.id_usuario IS NULL
+    UNION ALL SELECT COUNT(*) FROM futuro_comision_semanal r LEFT JOIN usuarios_personal_legacy m ON m.id_personal=r.id_comisionista WHERE r.id_comisionista IS NOT NULL AND NOT (r.id_comisionista=0 AND UPPER(COALESCE(r.comisionista,''))='LIDER') AND m.id_usuario IS NULL
     UNION ALL SELECT COUNT(*) FROM futuro_bono_4ventas r LEFT JOIN usuarios_personal_legacy m ON m.id_personal=r.id_personal WHERE r.id_personal IS NOT NULL AND m.id_usuario IS NULL
     UNION ALL SELECT COUNT(*) FROM futuro_bono_reco r LEFT JOIN usuarios_personal_legacy m ON m.id_personal=r.id_personal WHERE r.id_personal IS NOT NULL AND m.id_usuario IS NULL
   ) x;
@@ -98,32 +146,18 @@ BEGIN
   SELECT COUNT(*) INTO v_pendientes
   FROM usuarios vendedor
   LEFT JOIN usuarios lider ON lider.id=vendedor.jefe_directo_id
-  LEFT JOIN usuarios gerente ON gerente.id=lider.jefe_directo_id
+  LEFT JOIN usuarios gerente ON gerente.id=IF(lider.id=v_respaldo,v_respaldo,lider.jefe_directo_id)
   WHERE vendedor.puesto='vendedor'
     AND UPPER(COALESCE(vendedor.estatus,'ACTIVO'))='ACTIVO'
-    AND (lider.id IS NULL OR lider.puesto<>'lider' OR UPPER(COALESCE(lider.estatus,'ACTIVO'))<>'ACTIVO'
+    AND (lider.id IS NULL OR (lider.puesto<>'lider' AND lider.id<>v_respaldo) OR UPPER(COALESCE(lider.estatus,'ACTIVO'))<>'ACTIVO'
          OR gerente.id IS NULL OR gerente.puesto<>'gerente' OR UPPER(COALESCE(gerente.estatus,'ACTIVO'))<>'ACTIVO'
-         OR vendedor.id=lider.id OR vendedor.id=gerente.id OR lider.id=gerente.id);
+         OR vendedor.id=lider.id OR vendedor.id=gerente.id OR (lider.id=gerente.id AND lider.id<>v_respaldo));
   IF v_pendientes>0 THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Activacion bloqueada: hay vendedores activos sin cadena vendedor-lider-gerente valida.';
   END IF;
 
-  SELECT COUNT(*) INTO v_pendientes
-  FROM futuro_contratos c
-  LEFT JOIN futuro_contrato_vendedor fcv ON fcv.id_cont_vend=(
-    SELECT MAX(x.id_cont_vend) FROM futuro_contrato_vendedor x WHERE x.id_contrato=c.id_contrato
-  )
-  LEFT JOIN usuarios_personal_legacy upl ON upl.id_personal=fcv.id_personal
-  LEFT JOIN usuarios vendedor ON vendedor.id=upl.id_usuario
-  LEFT JOIN usuarios lider ON lider.id=vendedor.jefe_directo_id
-  LEFT JOIN usuarios gerente ON gerente.id=lider.jefe_directo_id
-  WHERE UPPER(COALESCE(c.estatus,'ACTIVO')) IN ('ACTIVO','PAGADO','USADO')
-    AND (vendedor.id IS NULL OR vendedor.puesto<>'vendedor'
-         OR lider.id IS NULL OR lider.puesto<>'lider'
-         OR gerente.id IS NULL OR gerente.puesto<>'gerente');
-  IF v_pendientes>0 THEN
-    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Activacion bloqueada: hay contratos vigentes sin vendedor, lider o gerente conciliados.';
-  END IF;
+  -- Las relaciones historicas conservan a quien realizo la venta aunque hoy tenga
+  -- otro puesto. Los contratos sin vendedor usan al usuario de respaldo al congelarse.
 END$$
 CALL usuarios_directorio_validar_activacion()$$
 DROP PROCEDURE usuarios_directorio_validar_activacion$$
@@ -179,17 +213,49 @@ UPDATE futuro_contrato_cobrador x JOIN usuarios_personal_legacy m ON m.id_person
 UPDATE futuro_abono_cobrador x JOIN usuarios_personal_legacy m ON m.id_personal=x.id_personal SET x.id_usuario=m.id_usuario WHERE x.id_usuario IS NULL;
 UPDATE futuro_gestion x JOIN usuarios_personal_legacy m ON m.id_personal=x.id_personal SET x.id_usuario=m.id_usuario WHERE x.id_usuario IS NULL;
 UPDATE futuro_comision_semanal x JOIN usuarios_personal_legacy m ON m.id_personal=x.id_comisionista SET x.id_usuario_comisionista=m.id_usuario WHERE x.id_usuario_comisionista IS NULL;
+UPDATE futuro_comision_semanal x
+JOIN usuarios respaldo ON respaldo.usuario='je.ureña'
+SET x.id_usuario_comisionista=respaldo.id
+WHERE x.id_usuario_comisionista IS NULL
+  AND x.id_comisionista=0
+  AND UPPER(COALESCE(x.comisionista,''))='LIDER';
 UPDATE futuro_bono_4ventas x JOIN usuarios_personal_legacy m ON m.id_personal=x.id_personal SET x.id_usuario=m.id_usuario WHERE x.id_usuario IS NULL;
 UPDATE futuro_bono_reco x JOIN usuarios_personal_legacy m ON m.id_personal=x.id_personal SET x.id_usuario=m.id_usuario WHERE x.id_usuario IS NULL;
 UPDATE futuro_bono_reco x JOIN usuarios_personal_legacy m ON m.id_personal=x.recomendado SET x.id_usuario_recomendado=m.id_usuario WHERE x.id_usuario_recomendado IS NULL;
 
 UPDATE futuro_contratos c
 JOIN futuro_contrato_vendedor fcv ON fcv.id_cont_vend=(SELECT MAX(x.id_cont_vend) FROM futuro_contrato_vendedor x WHERE x.id_contrato=c.id_contrato)
-JOIN usuarios vendedor ON vendedor.id=fcv.id_usuario
-JOIN usuarios lider ON lider.id=vendedor.jefe_directo_id
-JOIN usuarios gerente ON gerente.id=lider.jefe_directo_id
-SET c.id_usuario_vendedor=vendedor.id,c.id_usuario_lider=lider.id,c.id_usuario_gerente=gerente.id
-WHERE c.id_usuario_vendedor IS NULL OR c.id_usuario_lider IS NULL OR c.id_usuario_gerente IS NULL;
+JOIN usuarios_personal_legacy m ON m.id_personal=fcv.id_personal
+SET c.id_usuario_vendedor=m.id_usuario
+WHERE c.id_usuario_vendedor IS NULL;
+
+DELIMITER $$
+DROP PROCEDURE IF EXISTS usuarios_directorio_congelar_contratos$$
+CREATE PROCEDURE usuarios_directorio_congelar_contratos()
+BEGIN
+  DECLARE v_respaldo INT DEFAULT 0;
+  SELECT COALESCE(MAX(id),0) INTO v_respaldo FROM usuarios WHERE usuario='je.ureña';
+
+  UPDATE futuro_contratos c
+  LEFT JOIN usuarios vendedor ON vendedor.id=c.id_usuario_vendedor
+  LEFT JOIN usuarios lider
+    ON lider.id=vendedor.jefe_directo_id
+   AND (lider.puesto='lider' OR lider.id=v_respaldo)
+   AND UPPER(COALESCE(lider.estatus,'ACTIVO'))='ACTIVO'
+  LEFT JOIN usuarios gerente
+    ON gerente.id=IF(lider.id=v_respaldo,v_respaldo,lider.jefe_directo_id)
+   AND gerente.puesto='gerente'
+   AND UPPER(COALESCE(gerente.estatus,'ACTIVO'))='ACTIVO'
+  SET c.id_usuario_vendedor=COALESCE(vendedor.id,v_respaldo),
+      c.id_usuario_lider=COALESCE(lider.id,v_respaldo),
+      c.id_usuario_gerente=COALESCE(gerente.id,v_respaldo)
+  WHERE c.id_usuario_vendedor IS NULL
+     OR c.id_usuario_lider IS NULL
+     OR c.id_usuario_gerente IS NULL;
+END$$
+CALL usuarios_directorio_congelar_contratos()$$
+DROP PROCEDURE usuarios_directorio_congelar_contratos$$
+DELIMITER ;
 
 DELIMITER $$
 DROP PROCEDURE IF EXISTS usuarios_directorio_backfill_opcional$$

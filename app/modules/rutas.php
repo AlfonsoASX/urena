@@ -78,6 +78,10 @@ $contratos = qall("
     DATE(c.fecha_registro) AS fecha,
     c.estatus,
     c.costo_final,
+    CONCAT_WS(' ',t.nombre,t.apellido_p,t.apellido_m) AS titular,
+    COALESCE(uv.nombre,'—') AS vendedor,
+    COALESCE(uc.nombre,'—') AS cobrador,
+    COALESCE(uc.id,0) AS id_cobr,
 
     d.colonia AS colonia_orden,
     CONCAT(
@@ -99,6 +103,7 @@ $contratos = qall("
     ) tcm ON tcm.id_contrato = tc1.id_contrato
          AND tcm.max_tc     = tc1.id_titular_contrato
   ) tc ON tc.id_contrato = c.id_contrato
+  LEFT JOIN titulares t ON t.id_titular = tc.id_titular
 
   /* Último domicilio por titular */
   LEFT JOIN (
@@ -114,6 +119,16 @@ $contratos = qall("
 
   /* Domicilio */
   LEFT JOIN domicilios d ON d.id_domicilio = td.id_domicilio
+  LEFT JOIN usuarios uv ON uv.id = c.id_usuario_vendedor
+
+  /* Último cobrador asignado */
+  LEFT JOIN (
+    SELECT id_contrato, MAX(id_cont_cob) AS max_fcc
+    FROM futuro_contrato_cobrador
+    GROUP BY id_contrato
+  ) fccm ON fccm.id_contrato = c.id_contrato
+  LEFT JOIN futuro_contrato_cobrador fcc ON fcc.id_cont_cob = fccm.max_fcc
+  LEFT JOIN usuarios uc ON uc.id = fcc.id_usuario
 
   WHERE $where
   ORDER BY d.colonia ASC, c.id_contrato DESC
@@ -123,15 +138,6 @@ $contratos = qall("
 
 
   $cobradores = __get_personal_activo();
-
-  // enriquecer
-  foreach ($contratos as &$c) {
-    $c['titular']  = __titular_contrato($c['id_contrato']);
-    $c['vendedor'] = __vendedor_contrato($c['id_contrato']);
-    $act = __cobrador_actual($c['id_contrato']);
-    $c['cobrador'] = $act['cobrador'];
-    $c['id_cobr']  = (int)$act['id_usuario'];
-  } unset($c);
 
   ob_start(); ?>
   <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-2 mb-3">
@@ -312,23 +318,30 @@ case 'cobradores':
     $pers = usuarios_directorio_usuario($idp);
 
     $rows = qall("
-      SELECT c.id_contrato, DATE(c.fecha_registro) AS fecha, c.estatus, c.costo_final
+      SELECT c.id_contrato, DATE(c.fecha_registro) AS fecha, c.estatus, c.costo_final,
+             CONCAT_WS(' ',t.nombre,t.apellido_p,t.apellido_m) AS titular,
+             COALESCE(uv.nombre,'—') AS vendedor
       FROM futuro_contratos c
-      WHERE (
-        SELECT fcc2.id_usuario
-        FROM futuro_contrato_cobrador fcc2
-        WHERE fcc2.id_contrato=c.id_contrato
-        ORDER BY fcc2.id_cont_cob DESC
-        LIMIT 1
-      ) = ?
+      JOIN (
+        SELECT id_contrato,MAX(id_cont_cob) AS max_fcc
+        FROM futuro_contrato_cobrador
+        GROUP BY id_contrato
+      ) fccm ON fccm.id_contrato=c.id_contrato
+      JOIN futuro_contrato_cobrador fcc ON fcc.id_cont_cob=fccm.max_fcc AND fcc.id_usuario=?
+      LEFT JOIN (
+        SELECT tc1.id_contrato,tc1.id_titular
+        FROM titular_contrato tc1
+        JOIN (
+          SELECT id_contrato,MAX(id_titular_contrato) AS max_tc
+          FROM titular_contrato
+          GROUP BY id_contrato
+        ) tcm ON tcm.max_tc=tc1.id_titular_contrato
+      ) tc ON tc.id_contrato=c.id_contrato
+      LEFT JOIN titulares t ON t.id_titular=tc.id_titular
+      LEFT JOIN usuarios uv ON uv.id=c.id_usuario_vendedor
       ORDER BY c.id_contrato DESC
       LIMIT 500
     ", [$idp]);
-
-    foreach($rows as &$r){
-      $r['titular']  = __titular_contrato($r['id_contrato']);
-      $r['vendedor'] = __vendedor_contrato($r['id_contrato']);
-    } unset($r);
 
     ob_start(); ?>
     <div class="d-flex justify-content-between align-items-center mb-3">
@@ -365,21 +378,20 @@ case 'cobradores':
   }
 
   $cobradores = qall("
-    SELECT u.id AS id_usuario,u.nombre,
-           IFNULL((
-             SELECT COUNT(*)
-             FROM futuro_contratos c
-             WHERE (
-               SELECT fcc2.id_usuario
-               FROM futuro_contrato_cobrador fcc2
-               WHERE fcc2.id_contrato=c.id_contrato
-               ORDER BY fcc2.id_cont_cob DESC
-               LIMIT 1
-             ) = u.id
-           ),0) AS contratos
+    SELECT u.id AS id_usuario,u.nombre,COUNT(fcc.id_contrato) AS contratos
     FROM usuarios u
+    LEFT JOIN (
+      SELECT r.id_contrato,r.id_usuario
+      FROM futuro_contrato_cobrador r
+      JOIN (
+        SELECT id_contrato,MAX(id_cont_cob) AS max_fcc
+        FROM futuro_contrato_cobrador
+        GROUP BY id_contrato
+      ) latest ON latest.max_fcc=r.id_cont_cob
+    ) fcc ON fcc.id_usuario=u.id
     WHERE UPPER(COALESCE(u.estatus,'ACTIVO'))='ACTIVO' AND u.puesto='cobrador'
-    ORDER BY nombre ASC
+    GROUP BY u.id,u.nombre
+    ORDER BY u.nombre ASC
   ");
 
   ob_start(); ?>
