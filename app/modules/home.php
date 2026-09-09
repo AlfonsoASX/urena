@@ -1,375 +1,511 @@
 <?php
-// app/modules/home.php — Dashboard mejorado (sin triggers; todo vía PHP)
 require_once __DIR__."/../core/db.php";
 require_once __DIR__."/../core/helpers.php";
 require_once __DIR__."/../core/auth.php";
+require_once __DIR__."/../core/servicios_operativos.php";
+require_once __DIR__."/../core/inventario_v2.php";
 
 require_login();
 
-/** KPIs rápidos (defensivos ante datos faltantes) */
-function kpi_int($sql,$params=[]){
-  try{ $r=qone($sql,$params); if(!$r) return 0; return (int)array_values($r)[0]; }catch(Throwable $e){ return 0; }
+$isAdmin    = user_has_role(['administradora', 'admin']);
+$isAuxiliar = !$isAdmin && user_has_role(['auxiliar']) && !user_has_role(['administradora','coordinador','vendedor']);
+
+// ── Vista Auxiliar ────────────────────────────────────────────────────────────
+if ($isAuxiliar) {
+  so_bootstrap();
+  iv2_bootstrap();
+
+  // Servicios activos
+  $activosSql = iv2_servicio_activo_sql('s');
+  $serviciosActivos = [];
+  try {
+    $serviciosActivos = qall("
+      SELECT s.id_servicio, s.folio,
+             COALESCE(NULLIF(TRIM(COALESCE(s.fallecido_nombre,'')),''), 'Sin fallecido') AS fallecido,
+             COALESCE(s.estatus,'registrado') AS estatus,
+             s.fecha_hora_programada,
+             s.tipo_servicio,
+             COALESCE(ua.nombre, ua.usuario, '') AS auxiliar_nombre,
+             COALESCE(s.lugar_tipo,'') AS lugar_tipo
+      FROM servicios s
+      LEFT JOIN usuarios ua ON ua.id = s.id_usuario_auxiliar
+      WHERE {$activosSql}
+      ORDER BY s.fecha_hora_programada ASC, s.id_servicio DESC
+    ");
+  } catch (Throwable $e) {}
+
+  foreach ($serviciosActivos as &$row) {
+    $row['estatus_norm']  = so_servicio_estatus_norm($row['estatus']);
+    $row['estatus_badge'] = so_servicio_badge($row['estatus']);
+  }
+  unset($row);
+
+  // Conteo por estatus
+  $cntRegistrado  = count(array_filter($serviciosActivos, fn($r) => $r['estatus_norm'] === 'registrado'));
+  $cntPreparacion = count(array_filter($serviciosActivos, fn($r) => $r['estatus_norm'] === 'preparacion'));
+  $cntEnProceso   = count(array_filter($serviciosActivos, fn($r) => $r['estatus_norm'] === 'en_proceso'));
+
+  // Inventario – cajas disponibles
+  $cajasState    = so_inventory_section_state('cajas',    '', 100);
+  $cajasDisp     = count($cajasState['items']);
+
+  // Inventario – equipos por grupo
+  $equiposGrupos = [];
+  try { $equiposGrupos = iv2_disponibilidad_equipos('', 80, true); } catch (Throwable $e) {}
+
+  // Inventario – artículos con stock bajo (≤ 5)
+  $articulosBajos = [];
+  try {
+    $articulosBajos = qall("
+      SELECT articulo, COALESCE(existencias,0) AS existencias
+      FROM articulos
+      WHERE COALESCE(eliminado,0)=0 AND COALESCE(existencias,0) <= 5
+      ORDER BY existencias ASC, articulo ASC
+      LIMIT 20
+    ");
+  } catch (Throwable $e) {}
+
+  // Artículos total con stock
+  $articulosDisp = 0;
+  try {
+    $row = qone("SELECT COUNT(*) AS cnt FROM articulos WHERE COALESCE(eliminado,0)=0 AND COALESCE(existencias,0) > 0");
+    $articulosDisp = (int)($row['cnt'] ?? 0);
+  } catch (Throwable $e) {}
+
+  ob_start(); ?>
+  <div class="py-3 py-md-4">
+    <div class="mb-4">
+      <h1 class="h4 m-0">Panel auxiliar</h1>
+      <div class="text-muted small">Vista operativa — servicios activos e inventario</div>
+    </div>
+
+    <!-- KPIs -->
+    <div class="row g-3 mb-4">
+      <div class="col-6 col-md-3">
+        <div class="card border-secondary h-100">
+          <div class="card-body py-3">
+            <div class="text-muted small">Registrados</div>
+            <div class="fs-2 fw-bold text-secondary"><?= $cntRegistrado ?></div>
+            <div class="small text-muted">Sin preparar</div>
+          </div>
+        </div>
+      </div>
+      <div class="col-6 col-md-3">
+        <div class="card border-info h-100">
+          <div class="card-body py-3">
+            <div class="text-muted small">En preparación</div>
+            <div class="fs-2 fw-bold text-info"><?= $cntPreparacion ?></div>
+            <div class="small text-muted">Asignando recursos</div>
+          </div>
+        </div>
+      </div>
+      <div class="col-6 col-md-3">
+        <div class="card border-warning h-100">
+          <div class="card-body py-3">
+            <div class="text-muted small">En proceso</div>
+            <div class="fs-2 fw-bold text-warning"><?= $cntEnProceso ?></div>
+            <div class="small text-muted">Servicio activo</div>
+          </div>
+        </div>
+      </div>
+      <div class="col-6 col-md-3">
+        <div class="card border-<?= count($articulosBajos) ? 'danger' : 'success' ?> h-100">
+          <div class="card-body py-3">
+            <div class="text-muted small">Artículos stock bajo</div>
+            <div class="fs-2 fw-bold text-<?= count($articulosBajos) ? 'danger' : 'success' ?>"><?= count($articulosBajos) ?></div>
+            <div class="small text-muted"><?= $articulosDisp ?> con existencias</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="row g-3">
+
+      <!-- Servicios activos -->
+      <div class="col-12 col-xl-8">
+        <div class="card shadow-sm h-100">
+          <div class="card-header d-flex justify-content-between align-items-center py-2">
+            <span class="fw-semibold">Servicios activos</span>
+            <a href="?r=servicios.listar" class="btn btn-sm btn-outline-secondary">Ver todos</a>
+          </div>
+          <div class="card-body p-0">
+            <?php if (empty($serviciosActivos)): ?>
+              <div class="text-center text-muted py-5">Sin servicios activos actualmente.</div>
+            <?php else: ?>
+              <div class="table-responsive">
+                <table class="table table-sm table-hover align-middle mb-0">
+                  <thead class="table-light">
+                    <tr>
+                      <th class="ps-3">Folio</th>
+                      <th>Fallecido</th>
+                      <th>Estatus</th>
+                      <th>Programado</th>
+                      <th>Auxiliar</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <?php foreach ($serviciosActivos as $svc): ?>
+                      <tr>
+                        <td class="ps-3 fw-semibold text-nowrap"><?= e($svc['folio'] ?: '#'.$svc['id_servicio']) ?></td>
+                        <td><?= e($svc['fallecido']) ?></td>
+                        <td>
+                          <span class="badge text-bg-<?= e($svc['estatus_badge']) ?>">
+                            <?= e(ucwords(str_replace('_',' ',$svc['estatus_norm']))) ?>
+                          </span>
+                        </td>
+                        <td class="text-muted small text-nowrap">
+                          <?php if ($svc['fecha_hora_programada'] && $svc['fecha_hora_programada'] !== '0000-00-00 00:00:00'): ?>
+                            <?= e(date('d/m/Y H:i', strtotime($svc['fecha_hora_programada']))) ?>
+                          <?php else: ?>
+                            —
+                          <?php endif; ?>
+                        </td>
+                        <td class="small text-muted"><?= e($svc['auxiliar_nombre'] ?: '—') ?></td>
+                        <td class="pe-3">
+                          <a href="?r=servicio_asignaciones.ver&id=<?= (int)$svc['id_servicio'] ?>" class="btn btn-xs btn-outline-primary btn-sm py-0 px-2">Asignación</a>
+                        </td>
+                      </tr>
+                    <?php endforeach; ?>
+                  </tbody>
+                </table>
+              </div>
+            <?php endif; ?>
+          </div>
+        </div>
+      </div>
+
+      <!-- Inventario lateral -->
+      <div class="col-12 col-xl-4">
+        <div class="vstack gap-3">
+
+          <!-- Cajas / Ataúdes -->
+          <div class="card shadow-sm">
+            <div class="card-header d-flex justify-content-between align-items-center py-2">
+              <span class="fw-semibold">Ataúdes disponibles</span>
+              <span class="badge text-bg-<?= $cajasDisp > 0 ? 'success' : 'danger' ?>"><?= $cajasDisp ?></span>
+            </div>
+            <?php if (!empty($cajasState['items'])): ?>
+              <div class="list-group list-group-flush" style="max-height:180px;overflow-y:auto">
+                <?php foreach (array_slice($cajasState['items'], 0, 8) as $caja): ?>
+                  <div class="list-group-item list-group-item-action py-2 d-flex justify-content-between align-items-center">
+                    <div>
+                      <span class="fw-semibold small"><?= e($caja['codigo']) ?></span>
+                      <?php if ($caja['modelo'] ?? ''): ?>
+                        <span class="text-muted small ms-1"><?= e($caja['modelo']) ?></span>
+                      <?php endif; ?>
+                    </div>
+                    <span class="badge text-bg-<?= ($caja['reciclado'] ?? 0) || ($caja['veces_usado'] ?? 0) > 0 ? 'warning text-dark' : 'success' ?> ms-2">
+                      <?= ($caja['reciclado'] ?? 0) || ($caja['veces_usado'] ?? 0) > 0 ? 'Usado' : 'Nuevo' ?>
+                    </span>
+                  </div>
+                <?php endforeach; ?>
+                <?php if (count($cajasState['items']) > 8): ?>
+                  <div class="list-group-item text-muted small text-center py-1">+<?= count($cajasState['items']) - 8 ?> más</div>
+                <?php endif; ?>
+              </div>
+            <?php else: ?>
+              <div class="card-body py-3 text-center text-muted small">Sin ataúdes disponibles.</div>
+            <?php endif; ?>
+          </div>
+
+          <!-- Equipos por grupo -->
+          <div class="card shadow-sm">
+            <div class="card-header py-2">
+              <span class="fw-semibold">Equipos disponibles</span>
+            </div>
+            <?php if (!empty($equiposGrupos)): ?>
+              <div class="list-group list-group-flush" style="max-height:200px;overflow-y:auto">
+                <?php foreach ($equiposGrupos as $grp): ?>
+                  <div class="list-group-item py-2 d-flex justify-content-between align-items-center">
+                    <span class="small"><?= e($grp['equipo']) ?></span>
+                    <span class="badge text-bg-<?= (int)($grp['disponibles'] ?? 0) > 0 ? 'primary' : 'secondary' ?>">
+                      <?= (int)($grp['disponibles'] ?? 0) ?>
+                    </span>
+                  </div>
+                <?php endforeach; ?>
+              </div>
+            <?php else: ?>
+              <div class="card-body py-3 text-center text-muted small">Sin equipos registrados.</div>
+            <?php endif; ?>
+          </div>
+
+          <!-- Artículos con stock bajo -->
+          <?php if (!empty($articulosBajos)): ?>
+            <div class="card shadow-sm border-danger">
+              <div class="card-header py-2 bg-danger bg-opacity-10">
+                <span class="fw-semibold text-danger">Stock bajo (≤ 5 piezas)</span>
+              </div>
+              <div class="list-group list-group-flush" style="max-height:160px;overflow-y:auto">
+                <?php foreach ($articulosBajos as $art): ?>
+                  <div class="list-group-item py-2 d-flex justify-content-between align-items-center">
+                    <span class="small"><?= e($art['articulo']) ?></span>
+                    <span class="badge text-bg-<?= (int)$art['existencias'] === 0 ? 'danger' : 'warning text-dark' ?>">
+                      <?= (int)$art['existencias'] ?>
+                    </span>
+                  </div>
+                <?php endforeach; ?>
+              </div>
+            </div>
+          <?php endif; ?>
+
+        </div>
+      </div>
+
+    </div>
+  </div>
+  <?php
+  render('Panel auxiliar', ob_get_clean());
+  return;
 }
-function kpi_float($sql,$params=[]){
-  try{ $r=qone($sql,$params); if(!$r) return 0.0; return (float)array_values($r)[0]; }catch(Throwable $e){ return 0.0; }
-}
-
-// Servicios
-$kpi_serv_abiertos = kpi_int("SELECT COUNT(*) FROM servicios WHERE COALESCE(eliminado,0)=0 AND COALESCE(cerrado,0)=0");
-$kpi_serv_cerrados = kpi_int("SELECT COUNT(*) FROM servicios WHERE COALESCE(eliminado,0)=0 AND COALESCE(cerrado,0)=1");
-
-// Inventario
-$kpi_articulos_total = kpi_int("SELECT COUNT(*) FROM articulos WHERE COALESCE(eliminado,0)=0");
-$kpi_articulos_bajos = kpi_int("SELECT COUNT(*) FROM articulos WHERE COALESCE(eliminado,0)=0 AND COALESCE(existencias,0) <= 5");
-$kpi_cajas_total     = kpi_int("SELECT COUNT(*) FROM cajas WHERE COALESCE(eliminado,0)=0");
-
-// Pagos / contratos
-$kpi_contratos       = kpi_int("SELECT COUNT(*) FROM futuro_contratos");
-$kpi_abonos_hoy      = kpi_float("SELECT COALESCE(SUM(cant_abono),0) FROM futuro_abonos WHERE DATE(fecha_registro)=CURDATE()");
-
-// Comisiones (si existe tabla)
-$kpi_comisiones_pend = kpi_int("SELECT COUNT(*) FROM futuro_comision_semanal WHERE LOWER(COALESCE(estatus,'')) IN ('pendiente','por_pagar','por pagar')");
-
-// Personal (vendedores/cobradores)
-$personal = []; 
-try {
-  $personal = qall("SELECT id_personal, CONCAT(nombre,' ',apellido_p,' ',apellido_m) AS nombre, LOWER(COALESCE(estatus,'')) AS estatus
-                    FROM futuro_personal WHERE COALESCE(estatus,'') <> 'inactivo' ORDER BY nombre ASC");
-} catch(Throwable $e){ $personal=[]; }
-
-// ÚLTIMOS ABONOS
-$abonos = [];
-try {
-  $abonos = qall("
-      SELECT a.id_abono, a.id_contrato, a.cant_abono, DATE_FORMAT(a.fecha_registro,'%Y-%m-%d') AS fecha,
-             (SELECT CONCAT(t.nombre,' ',t.apellido_p) FROM titulares t 
-              JOIN titular_contrato tc ON tc.id_titular=t.id_titular 
-              WHERE tc.id_contrato=a.id_contrato LIMIT 1) AS titular
-      FROM futuro_abonos a
-      ORDER BY a.id_abono DESC
-      LIMIT 10");
-} catch(Throwable $e){ $abonos=[]; }
-
-// COMISIONES RECIENTES (pendientes)
-$comisiones = [];
-try {
-  $comisiones = qall("
-      SELECT id_bono_sem, id_contrato, COALESCE(cant_comision,0) AS monto,
-             LOWER(COALESCE(estatus,'')) AS estatus,
-             DATE_FORMAT(fecha_registro,'%Y-%m-%d') AS fecha
-      FROM futuro_comision_semanal
-      ORDER BY id_bono_sem DESC
-      LIMIT 10");
-} catch(Throwable $e){ $comisiones=[]; }
 
 ob_start(); ?>
 <style>
   .kpi-card{border-radius:1rem}
   .kpi-value{font-size:1.6rem;font-weight:700}
   .kpi-sub{font-size:.85rem;color:#6c757d}
-  .quick-link{display:flex;gap:.5rem;align-items:center;text-decoration:none}
-  .quick-link:hover{opacity:.85}
+  .placeholder-box{min-height:220px;background:linear-gradient(135deg,#f8f9fa,#eef2f6);border:1px dashed #d0d7de;border-radius:1rem}
+  .loader-line{height:12px;border-radius:999px;background:linear-gradient(90deg,#eceff3,#f8f9fa,#eceff3);background-size:200% 100%;animation: shimmer 1.4s linear infinite}
+  .loader-line + .loader-line{margin-top:.75rem}
+  @keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
 </style>
 
 <div class="py-3 py-md-4">
-  <!-- KPIs -->
-  <div class="row g-3 mb-4">
-    <div class="col-6 col-md-3">
-      <div class="card kpi-card shadow-sm">
-        <div class="card-body">
-          <div class="kpi-sub">Servicios abiertos</div>
-          <div class="kpi-value"><?= number_format($kpi_serv_abiertos) ?></div>
-          <div class="kpi-sub">Cerrados: <?= number_format($kpi_serv_cerrados) ?></div>
-        </div>
-      </div>
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <div>
+      <h1 class="h4 m-0">Panel principal</h1>
+      <div class="text-muted">Carga diferida de indicadores y widgets para reducir el tiempo de respuesta inicial.</div>
     </div>
-    <div class="col-6 col-md-3">
-      <div class="card kpi-card shadow-sm">
-        <div class="card-body">
-          <div class="kpi-sub">Abonos del día</div>
-          <div class="kpi-value">$<?= number_format($kpi_abonos_hoy,2) ?></div>
-          <div class="kpi-sub">Contratos: <?= number_format($kpi_contratos) ?></div>
-        </div>
+    <?php if ($isAdmin): ?>
+      <div class="d-flex gap-2">
+        <a class="btn btn-outline-secondary btn-sm" href="?r=maintenance.perf_report">Rendimiento</a>
+        <a class="btn btn-outline-dark btn-sm" href="?r=maintenance.schema_repair">Esquema</a>
       </div>
-    </div>
-    <div class="col-6 col-md-3">
-      <div class="card kpi-card shadow-sm">
-        <div class="card-body">
-          <div class="kpi-sub">Comisiones pendientes</div>
-          <div class="kpi-value"><?= number_format($kpi_comisiones_pend) ?></div>
-          <div class="kpi-sub">Revísalas y págales</div>
-        </div>
-      </div>
-    </div>
-    <div class="col-6 col-md-3">
-      <div class="card kpi-card shadow-sm">
-        <div class="card-body">
-          <div class="kpi-sub">Inventario</div>
-          <div class="kpi-value"><?= number_format($kpi_articulos_total) ?> artículos</div>
-          <div class="kpi-sub">Bajo stock: <?= number_format($kpi_articulos_bajos) ?> · Cajas: <?= number_format($kpi_cajas_total) ?></div>
-        </div>
-      </div>
-    </div>
+    <?php endif; ?>
   </div>
 
-  <!-- Gráficas -->
-  <?php
-  try {
-    $abonos30 = qall("
-      SELECT DATE(fecha_registro) AS fecha, COALESCE(SUM(cant_abono),0) AS total
-      FROM futuro_abonos
-      WHERE fecha_registro >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
-      GROUP BY DATE(fecha_registro)
-      ORDER BY fecha ASC
-    ");
-    $abonos12 = qall("
-      SELECT DATE_FORMAT(fecha_registro, '%Y-%m') AS mes, COALESCE(SUM(cant_abono),0) AS total
-      FROM futuro_abonos
-      WHERE fecha_registro >= DATE_SUB(CURDATE(), INTERVAL 12 MONTH)
-      GROUP BY DATE_FORMAT(fecha_registro, '%Y-%m')
-      ORDER BY mes ASC
-    ");
-  } catch (Throwable $e) { $abonos30 = $abonos12 = []; }
-  $dias_labels = array_map(fn($r)=>$r['fecha'],$abonos30);
-  $dias_values = array_map(fn($r)=>(float)$r['total'],$abonos30);
-  $mes_labels  = array_map(fn($r)=>$r['mes'],$abonos12);
-  $mes_values  = array_map(fn($r)=>(float)$r['total'],$abonos12);
-  ?>
-  <div class="row g-3 mb-4">
-    <div class="col-12 col-lg-6">
-      <div class="card shadow-sm h-100">
-        <div class="card-body">
-          <h2 class="h6 mb-3">Recuperado últimos 30 días</h2>
-          <canvas id="chartDias" height="180"></canvas>
-        </div>
-      </div>
-    </div>
-    <div class="col-12 col-lg-6">
-      <div class="card shadow-sm h-100">
-        <div class="card-body">
-          <h2 class="h6 mb-3">Recuperado últimos 12 meses</h2>
-          <canvas id="chartMeses" height="180"></canvas>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-  <script>
-  document.addEventListener('DOMContentLoaded',function(){
-    new Chart(document.getElementById('chartDias'),{
-      type:'bar',
-      data:{labels:<?=json_encode($dias_labels)?>,datasets:[{data:<?=json_encode($dias_values)?>,backgroundColor:'rgba(54,162,235,0.5)',borderColor:'rgba(54,162,235,1)',borderWidth:1}]},
-      options:{scales:{y:{beginAtZero:true}},plugins:{legend:{display:false}}}
-    });
-    new Chart(document.getElementById('chartMeses'),{
-      type:'line',
-      data:{labels:<?=json_encode($mes_labels)?>,datasets:[{data:<?=json_encode($mes_values)?>,borderColor:'rgba(75,192,192,1)',backgroundColor:'rgba(75,192,192,0.2)',tension:.3,fill:true}]},
-      options:{scales:{y:{beginAtZero:true}},plugins:{legend:{display:false}}}
-    });
-  });
-  </script>
-
-  <!-- === GESTIONES & CITAS DEL DÍA === -->
-  <div class="row g-3 mt-4">
-    <!-- Widget: Citas del Día -->
-    <div class="col-12 col-lg-6">
-      <div class="card shadow-sm h-100">
-        <div class="card-body">
-          <h2 class="h6 mb-3">🗓️ Citas del día (para cobrar)</h2>
-          <?php
-          try {
-            $citas = qall("
-              SELECT g.id_contrato, g.fecha_proxima_visita,
-                     c.id_contrato, t.titular, d.colonia,
-                     CONCAT(p.nombre,' ',p.apellido_p) AS cobrador,
-                     CASE 
-                       WHEN g.fecha_proxima_visita IS NULL THEN 'sin_programar'
-                       WHEN g.fecha_proxima_visita < CURDATE() THEN 'vencida'
-                       WHEN DATE(g.fecha_registro)=CURDATE() THEN 'atendida'
-                       ELSE 'pendiente'
-                     END AS estado
-              FROM futuro_gestion g
-              JOIN futuro_contratos c ON c.id_contrato=g.id_contrato
-              LEFT JOIN vw_titular_contrato t ON t.id_contrato=g.id_contrato
-              LEFT JOIN futuro_contrato_cobrador fc ON fc.id_contrato=g.id_contrato
-              LEFT JOIN futuro_personal p ON p.id_personal=fc.id_personal
-              LEFT JOIN titular_contrato tc ON tc.id_contrato=c.id_contrato
-              LEFT JOIN titular_dom td ON td.id_titular=tc.id_titular
-              LEFT JOIN domicilios d ON d.id_domicilio=td.id_domicilio
-              WHERE DATE(g.fecha_proxima_visita)=CURDATE()
-              ORDER BY g.fecha_proxima_visita ASC
-            ");
-          } catch(Throwable $e){ $citas=[]; }
-          ?>
-          <div class="table-responsive">
-            <table class="table table-sm align-middle">
-              <thead><tr><th>#Contrato</th><th>Titular</th><th>Colonia</th><th>Cobrador</th><th>Estado</th></tr></thead>
-              <tbody>
-                <?php if(!$citas): ?>
-                  <tr><td colspan="5" class="text-muted">No hay citas programadas para hoy.</td></tr>
-                <?php else: foreach($citas as $c): 
-                  $badge = match($c['estado']){
-                    'atendida'=>'success','pendiente'=>'warning','vencida'=>'danger',default=>'secondary'
-                  };
-                ?>
-                  <tr>
-                    <td>#<?= (int)$c['id_contrato'] ?></td>
-                    <td><?= e($c['titular'] ?? '-') ?></td>
-                    <td><?= e($c['colonia'] ?? '-') ?></td>
-                    <td><?= e($c['cobrador'] ?? '-') ?></td>
-                    <td><span class="badge bg-<?= $badge ?>"><?= ucfirst($c['estado']) ?></span></td>
-                  </tr>
-                <?php endforeach; endif; ?>
-              </tbody>
-            </table>
+  <div class="row g-3 mb-4" id="kpiGrid">
+    <?php for ($i = 0; $i < 4; $i++): ?>
+      <div class="col-6 col-md-3">
+        <div class="card kpi-card shadow-sm">
+          <div class="card-body">
+            <div class="loader-line w-75"></div>
+            <div class="loader-line w-50 mt-3"></div>
           </div>
         </div>
       </div>
-    </div>
+    <?php endfor; ?>
+  </div>
 
-<?php
-// Obtener gestiones atendidas hoy directamente desde PHP
-try {
-  $gestiones_hoy = qall("
-    SELECT g.latitud, g.longitud,
-           COALESCE(t.titular,'') AS titular,
-           CONCAT(p.nombre,' ',p.apellido_p) AS cobrador
-    FROM futuro_gestion g
-    LEFT JOIN vw_titular_contrato t ON t.id_contrato=g.id_contrato
-    LEFT JOIN futuro_contrato_cobrador fc ON fc.id_contrato=g.id_contrato
-    LEFT JOIN futuro_personal p ON p.id_personal=fc.id_personal
-    WHERE DATE(g.fecha_registro)=CURDATE()
-      AND g.latitud IS NOT NULL AND g.longitud IS NOT NULL
-      AND g.latitud!=0 AND g.longitud!=0
-  ");
-} catch(Throwable $e) { $gestiones_hoy = []; }
-?>
-
-<!-- Widget: Mapa de gestiones atendidas -->
-<div class="col-12 col-lg-6">
-  <div class="card shadow-sm h-100">
-    <div class="card-body">
-      <h2 class="h6 mb-3">🗺️ Mapa de gestiones atendidas (hoy)</h2>
-      <div id="mapGestiones" style="height:300px;border-radius:10px;"></div>
-      <?php if (empty($gestiones_hoy)): ?>
-        <p class="text-muted small mt-2 mb-0 text-center">No hay gestiones con ubicación registrada hoy.</p>
-      <?php endif; ?>
+  <div id="widgetsArea">
+    <div class="placeholder-box d-flex align-items-center justify-content-center">
+      <div class="text-center text-muted">
+        <div class="loader-line" style="width:220px"></div>
+        <div class="loader-line" style="width:320px;margin-top:16px"></div>
+      </div>
     </div>
   </div>
 </div>
 
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-
 <script>
-document.addEventListener("DOMContentLoaded", () => {
-  const map = L.map("mapGestiones").setView([21.122, -101.68], 12);
-  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-    attribution: "© OpenStreetMap"
-  }).addTo(map);
+async function fetchJson(url) {
+  const res = await fetch(url, { headers: { Accept: 'application/json' } });
+  const data = await res.json();
+  if (!data.ok) throw new Error(data.message || 'Error');
+  return data.data;
+}
 
-  const puntos = <?= json_encode($gestiones_hoy, JSON_UNESCAPED_UNICODE) ?>;
-  if (!puntos.length) return;
+function currency(value) {
+  return new Intl.NumberFormat('es-MX', { style: 'currency', currency: 'MXN' }).format(Number(value || 0));
+}
 
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, char => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  })[char]);
+}
+
+function renderKpis(data) {
+  const items = [
+    { title: 'Servicios abiertos', value: Number(data.servicios_abiertos || 0).toLocaleString('es-MX'), sub: `Cerrados: ${Number(data.servicios_cerrados || 0).toLocaleString('es-MX')}` },
+    { title: 'Pagos servicio del día', value: currency(data.pagos_servicio_hoy || 0), sub: `Abonos futuros: ${currency(data.abonos_hoy || 0)}` },
+    { title: 'Comisiones pendientes', value: Number(data.comisiones_pendientes || 0).toLocaleString('es-MX'), sub: 'Pendientes por revisar' },
+    { title: 'Inventario', value: `${Number(data.articulos_total || 0).toLocaleString('es-MX')} artículos`, sub: `Bajo stock: ${Number(data.articulos_bajos || 0).toLocaleString('es-MX')} · Cajas: ${Number(data.cajas_total || 0).toLocaleString('es-MX')}` },
+  ];
+
+  document.getElementById('kpiGrid').innerHTML = items.map(item => `
+    <div class="col-6 col-md-3">
+      <div class="card kpi-card shadow-sm">
+        <div class="card-body">
+          <div class="kpi-sub">${item.title}</div>
+          <div class="kpi-value">${item.value}</div>
+          <div class="kpi-sub">${item.sub}</div>
+        </div>
+      </div>
+    </div>
+  `).join('');
+}
+
+function renderWidgets(data) {
+  const widgetsArea = document.getElementById('widgetsArea');
+  widgetsArea.innerHTML = `
+    <div class="row g-3 mb-4">
+      <div class="col-12 col-lg-6">
+        <div class="card shadow-sm h-100"><div class="card-body">
+          <h2 class="h6 mb-3">Recuperado últimos 30 días</h2>
+          <canvas id="chartDias" height="180"></canvas>
+        </div></div>
+      </div>
+      <div class="col-12 col-lg-6">
+        <div class="card shadow-sm h-100"><div class="card-body">
+          <h2 class="h6 mb-3">Recuperado últimos 12 meses</h2>
+          <canvas id="chartMeses" height="180"></canvas>
+        </div></div>
+      </div>
+    </div>
+    <div class="row g-3 mb-4">
+      <div class="col-12 col-lg-6">
+        <div class="card shadow-sm h-100"><div class="card-body">
+          <h2 class="h6 mb-3">Citas del día</h2>
+          <div class="table-responsive">
+            <table class="table table-sm align-middle">
+              <thead><tr><th>#Contrato</th><th>Titular</th><th>Colonia</th><th>Cobrador</th><th>Estado</th></tr></thead>
+              <tbody id="tbodyCitas"></tbody>
+            </table>
+          </div>
+        </div></div>
+      </div>
+      <div class="col-12 col-lg-6">
+        <div class="card shadow-sm h-100"><div class="card-body">
+          <h2 class="h6 mb-3">Mapa de gestiones atendidas (hoy)</h2>
+          <div id="mapGestiones" style="height:300px;border-radius:10px;"></div>
+          <p id="mapEmpty" class="text-muted small mt-2 mb-0 text-center d-none">No hay gestiones con ubicación registrada hoy.</p>
+        </div></div>
+      </div>
+    </div>
+    <div class="row g-3">
+      <div class="col-12 col-xl-6">
+        <div class="card shadow-sm h-100"><div class="card-body">
+          <h2 class="h6 mb-3">Últimos abonos</h2>
+          <div class="table-responsive">
+            <table class="table table-sm align-middle">
+              <thead><tr><th>#</th><th>Contrato</th><th>Titular</th><th class="text-end">Monto</th><th>Fecha</th></tr></thead>
+              <tbody id="tbodyAbonos"></tbody>
+            </table>
+          </div>
+        </div></div>
+      </div>
+      <div class="col-12 col-xl-6">
+        <div class="card shadow-sm h-100"><div class="card-body">
+          <h2 class="h6 mb-3">Últimas comisiones</h2>
+          <div class="table-responsive">
+            <table class="table table-sm align-middle">
+              <thead><tr><th>#</th><th>Contrato</th><th class="text-end">Monto</th><th>Estatus</th><th>Fecha</th></tr></thead>
+              <tbody id="tbodyComisiones"></tbody>
+            </table>
+          </div>
+        </div></div>
+      </div>
+    </div>
+  `;
+
+  new Chart(document.getElementById('chartDias'), {
+    type: 'bar',
+    data: {
+      labels: (data.abonos30 || []).map(row => row.fecha),
+      datasets: [{ data: (data.abonos30 || []).map(row => Number(row.total || 0)), backgroundColor: 'rgba(54,162,235,0.5)', borderColor: 'rgba(54,162,235,1)', borderWidth: 1 }]
+    },
+    options: { scales: { y: { beginAtZero: true } }, plugins: { legend: { display: false } } }
+  });
+
+  new Chart(document.getElementById('chartMeses'), {
+    type: 'line',
+    data: {
+      labels: (data.abonos12 || []).map(row => row.mes),
+      datasets: [{ data: (data.abonos12 || []).map(row => Number(row.total || 0)), borderColor: 'rgba(75,192,192,1)', backgroundColor: 'rgba(75,192,192,0.2)', tension: .3, fill: true }]
+    },
+    options: { scales: { y: { beginAtZero: true } }, plugins: { legend: { display: false } } }
+  });
+
+  const tbodyCitas = document.getElementById('tbodyCitas');
+  const citas = data.citas_hoy || [];
+  tbodyCitas.innerHTML = citas.length ? citas.map(row => `
+    <tr>
+      <td>#${Number(row.id_contrato || 0)}</td>
+      <td>${escapeHtml(row.titular || '-')}</td>
+      <td>${escapeHtml(row.colonia || '-')}</td>
+      <td>${escapeHtml(row.cobrador || '-')}</td>
+      <td><span class="badge bg-${row.estado === 'atendida' ? 'success' : (row.estado === 'pendiente' ? 'warning text-dark' : (row.estado === 'vencida' ? 'danger' : 'secondary'))}">${escapeHtml(row.estado || 'sin_programar')}</span></td>
+    </tr>
+  `).join('') : '<tr><td colspan="5" class="text-muted">No hay citas programadas para hoy.</td></tr>';
+
+  const tbodyAbonos = document.getElementById('tbodyAbonos');
+  const abonos = data.ultimos_abonos || [];
+  tbodyAbonos.innerHTML = abonos.length ? abonos.map(row => `
+    <tr>
+      <td>#${Number(row.id_abono || 0)}</td>
+      <td>#${Number(row.id_contrato || 0)}</td>
+      <td>${escapeHtml(row.titular || '-')}</td>
+      <td class="text-end">${currency(row.cant_abono || 0)}</td>
+      <td>${escapeHtml(row.fecha || '')}</td>
+    </tr>
+  `).join('') : '<tr><td colspan="5" class="text-muted">Sin abonos recientes.</td></tr>';
+
+  const tbodyComisiones = document.getElementById('tbodyComisiones');
+  const comisiones = data.ultimas_comisiones || [];
+  tbodyComisiones.innerHTML = comisiones.length ? comisiones.map(row => `
+    <tr>
+      <td>#${Number(row.id_bono_sem || 0)}</td>
+      <td>#${Number(row.id_contrato || 0)}</td>
+      <td class="text-end">${currency(row.monto || 0)}</td>
+      <td>${escapeHtml(row.estatus || '-')}</td>
+      <td>${escapeHtml(row.fecha || '')}</td>
+    </tr>
+  `).join('') : '<tr><td colspan="5" class="text-muted">Sin comisiones recientes.</td></tr>';
+
+  const puntos = data.gestiones_hoy || [];
+  const map = L.map('mapGestiones').setView([21.122, -101.68], 12);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OpenStreetMap' }).addTo(map);
   const bounds = [];
   puntos.forEach(p => {
     const lat = parseFloat(p.latitud);
     const lng = parseFloat(p.longitud);
     if (!lat || !lng) return;
-
     const marker = L.marker([lat, lng]).addTo(map);
-    marker.bindPopup(
-      `<strong>${p.titular || 'Sin titular'}</strong><br>` +
-      `${p.cobrador || 'Sin cobrador'}<br>` +
-      `<a href="https://maps.google.com/?q=${lat},${lng}" target="_blank">Abrir en Google Maps</a>`
-    );
+    marker.bindPopup(`<strong>${escapeHtml(p.titular || 'Sin titular')}</strong><br>${escapeHtml(p.cobrador || 'Sin cobrador')}<br><a href="https://maps.google.com/?q=${lat},${lng}" target="_blank">Abrir en Google Maps</a>`);
     bounds.push([lat, lng]);
   });
+  if (bounds.length) {
+    map.fitBounds(bounds, { padding: [30, 30] });
+  } else {
+    document.getElementById('mapEmpty').classList.remove('d-none');
+  }
+}
 
-  if (bounds.length) map.fitBounds(bounds, { padding: [30, 30] });
-});
+async function loadDashboard() {
+  try {
+    const kpis = await fetchJson('?r=home_api.kpis');
+    renderKpis(kpis);
+  } catch (error) {
+    document.getElementById('kpiGrid').innerHTML = '<div class="col-12"><div class="alert alert-warning">No se pudieron cargar los KPIs.</div></div>';
+  }
+
+  try {
+    const widgets = await fetchJson('?r=home_api.widgets');
+    renderWidgets(widgets);
+  } catch (error) {
+    document.getElementById('widgetsArea').innerHTML = '<div class="alert alert-warning">No se pudieron cargar los widgets secundarios.</div>';
+  }
+}
+
+document.addEventListener('DOMContentLoaded', loadDashboard);
 </script>
-
-
-
-
-
-    
-  </div>
-
-
-
-
-
-  <!-- Últimos abonos y comisiones -->
-  <div class="row g-3 mt-4">
-    <div class="col-12 col-xl-6">
-      <div class="card shadow-sm h-100">
-        <div class="card-body">
-          <h2 class="h6 mb-3">Últimos abonos</h2>
-          <div class="table-responsive">
-            <table class="table table-sm align-middle">
-              <thead><tr><th>#</th><th>Contrato</th><th>Titular</th><th class="text-end">Monto</th><th>Fecha</th><th></th></tr></thead>
-              <tbody>
-              <?php if(!$abonos): ?>
-                <tr><td colspan="6" class="text-muted">Sin abonos recientes.</td></tr>
-              <?php else: foreach($abonos as $a):
-                $geo=qone("SELECT latitud,longitud FROM futuro_gestion WHERE id_contrato=? ORDER BY id_gestion DESC LIMIT 1",[$a['id_contrato']]);
-                $linkMap=($geo&&$geo['latitud'])?"https://maps.google.com/?q={$geo['latitud']},{$geo['longitud']}":null;
-              ?>
-                <tr>
-                  <td><?= (int)$a['id_abono'] ?></td>
-                  <td>#<?= (int)$a['id_contrato'] ?></td>
-                  <td><?= e($a['titular'] ?? '') ?></td>
-                  <td class="text-end">$<?= number_format((float)$a['cant_abono'],2) ?></td>
-                  <td><?= e($a['fecha']) ?></td>
-                  <td>
-                    <a class="btn btn-sm btn-outline-primary" href="?r=pagos.nuevo_abono&id_contrato=<?= (int)$a['id_contrato'] ?>">Ver</a>
-                    <?php if($linkMap): ?><a href="<?= $linkMap ?>" target="_blank" class="btn btn-sm btn-outline-success" title="Ver ubicación">📍</a><?php endif; ?>
-                  </td>
-                </tr>
-              <?php endforeach; endif; ?>
-              </tbody>
-            </table>
-          </div>
-          <a class="quick-link" href="?r=pagos.contratos">➡ Ver todos los contratos</a>
-        </div>
-      </div>
-    </div>
-
-    <div class="col-12 col-xl-6">
-      <div class="card shadow-sm h-100">
-        <div class="card-body">
-          <h2 class="h6 mb-3">Comisiones recientes</h2>
-          <div class="table-responsive">
-            <table class="table table-sm align-middle">
-              <thead><tr><th>#</th><th>Contrato</th><th class="text-end">Monto</th><th>Estatus</th><th>Fecha</th><th></th></tr></thead>
-              <tbody>
-                <?php if(!$comisiones): ?>
-                  <tr><td colspan="6" class="text-muted">Sin registros de comisión.</td></tr>
-                <?php else: foreach($comisiones as $c): 
-                  $st=strtolower($c['estatus']??'');
-                  $badge=($st==='pagada')?'success':(($st==='pendiente'||$st==='por pagar'||$st==='por_pagar')?'warning':'secondary'); ?>
-                  <tr>
-                    <td><?= (int)$c['id_bono_sem'] ?></td>
-                    <td>#<?= (int)$c['id_contrato'] ?></td>
-                    <td class="text-end">$<?= number_format((float)$c['monto'],2) ?></td>
-                    <td><span class="badge bg-<?= $badge ?>"><?= e($c['estatus'] ?? '-') ?></span></td>
-                    <td><?= e($c['fecha']) ?></td>
-                    <td><a class="btn btn-sm btn-outline-secondary" href="?r=pagos.comisiones&id_contrato=<?= (int)$c['id_contrato'] ?>">Capturar/Ver</a></td>
-                  </tr>
-                <?php endforeach; endif; ?>
-              </tbody>
-            </table>
-          </div>
-          <a class="quick-link" href="?r=pagos.comisiones">➡ Ir a comisiones</a>
-        </div>
-      </div>
-    </div>
-  </div>
-</div>
-
 <?php
-// Render con layout base
-render('Inicio', ob_get_clean());
+render('Panel principal', ob_get_clean());

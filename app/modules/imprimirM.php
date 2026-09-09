@@ -1,4 +1,5 @@
 <?php
+// app/modules/imprimirM.php
 // 1. INICIO DEL BUFFER (Captura cualquier salida accidental)
 ob_start();
 
@@ -18,8 +19,6 @@ header('Content-Type: application/json; charset=utf-8');
 
 // --- Cargas de archivos ---
 // Usamos rutas absolutas para evitar problemas
-
-
 
 // --- Lógica ---
 
@@ -44,23 +43,32 @@ if ($id_abono <= 0) {
     sendError('Error: ID invalido');
 }
 
+// AQUÍ ESTÁ EL CAMBIO PRINCIPAL:
+// Calculamos el saldo histórico de la misma forma que en imprimirL.php y el ticket web
 $sql = "
     SELECT 
-        a.id_abono, a.fecha_registro, a.cant_abono, a.saldo,
-        c.id_contrato, c.estatus, c.tipo_contrato, 
+        a.id_abono, a.fecha_registro, a.cant_abono,
+        c.id_contrato, c.estatus, c.tipo_contrato, c.costo_final,
         t.titular,
-        CONCAT(p.nombre, ' ', p.apellido_p) AS nombre_cobrador
+        p.nombre AS nombre_cobrador,
+        GREATEST(
+          c.costo_final - COALESCE((
+            SELECT SUM(a2.cant_abono)
+            FROM futuro_abonos a2
+            WHERE a2.id_contrato = c.id_contrato
+              AND a2.id_abono <= a.id_abono
+          ),0),
+          0
+        ) AS saldo_historico
     FROM futuro_abonos a
     INNER JOIN futuro_contratos c ON c.id_contrato = a.id_contrato
     LEFT JOIN vw_titular_contrato t ON t.id_contrato = c.id_contrato
-    LEFT JOIN futuro_abono_cobrador fac ON fac.id_abono = a.id_abono
-    LEFT JOIN futuro_personal p ON p.id_personal = fac.id_personal
+    LEFT JOIN futuro_abono_cobrador fac ON fac.id_abono_cobrador=(SELECT MAX(x.id_abono_cobrador) FROM futuro_abono_cobrador x WHERE x.id_abono=a.id_abono)
+    LEFT JOIN usuarios p ON p.id=fac.id_usuario
     WHERE a.id_abono = ?
     LIMIT 1
 ";
 
-// Asegúrate que tu función qone() existe y funciona. Si falla, el script muere.
-// Si usas PDO directo, adáptalo. Asumo que qone() es de tu framework.
 $datos = qone($sql, [$id_abono]);
 
 if (!$datos) {
@@ -90,7 +98,6 @@ function fila($izquierda, $derecha) {
 }
 
 // --- Construcción del Array (Sin Clases para máxima compatibilidad) ---
-// A veces json_encode con objetos privados da problemas, usaremos Arrays asociativos puros.
 
 function addItem($content, $align=0, $bold=0, $format=0) {
     return [
@@ -129,7 +136,10 @@ $response[] = addItem("IMPORTE PAGADO", 1, 1, 0);
 $response[] = addItem(asMoney($datos['cant_abono']), 1, 1, 1);
 
 $response[] = addItem(" ");
-$response[] = addItem(fila("Saldo Restante:", asMoney($datos['saldo'])));
+
+// AQUÍ IMPRIMIMOS EL SALDO HISTÓRICO CALCULADO:
+$response[] = addItem(fila("Saldo Restante:", asMoney($datos['saldo_historico'])));
+
 $response[] = addItem("Cobrador:", 0, 1);
 $cobrador = $datos['nombre_cobrador'] ? $datos['nombre_cobrador'] : 'Oficina';
 $response[] = addItem($cobrador, 0);

@@ -146,7 +146,14 @@ class BinaryStream {
       return "";
     }
 
-    return (string) fread($this->f, $n);
+    $data = (string) fread($this->f, $n);
+    if ($data === "") {
+      return str_repeat("\0", $n);
+    }
+    if (strlen($data) < $n) {
+      return str_pad($data, $n, "\0");
+    }
+    return $data;
   }
 
   public function write($data, $length = null) {

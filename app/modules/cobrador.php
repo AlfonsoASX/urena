@@ -4,6 +4,7 @@ require_once __DIR__.'/../core/db.php';
 require_once __DIR__.'/../core/helpers.php';
 require_once __DIR__.'/../core/ui.php';
 require_once __DIR__.'/../core/auth.php';
+require_once __DIR__.'/../core/cortes_cobradores.php';
 
 require_login();
 
@@ -18,8 +19,7 @@ $action = $action ?? 'panel';
 
 function cobrador_personal_id(): int {
   $u = current_user();
-  $r = qone("SELECT id_personal FROM futuro_personal WHERE id=?", [$u['id']]);
-  return (int)($r['id_personal'] ?? 0);
+  return (int)($u['id'] ?? 0);
 }
 
 function cobrador_saldo_contrato(PDO $pdo, int $id_contrato, float $monto_nuevo = 0.0, bool $lock = false): array {
@@ -46,7 +46,7 @@ function cobrador_saldo_contrato(PDO $pdo, int $id_contrato, float $monto_nuevo 
 /**
  * Obtiene la lista de contratos con filtros, ordenamiento y PAGINACIÓN
  */
-function cobrador_contratos_paginado(int $id_personal, bool $soloAsignados = true, string $busqueda = '', string $orden = 'prioridad', int $pagina = 1, int $limite = 10): array {
+function cobrador_contratos_paginado(int $id_usuario, bool $soloAsignados = true, string $busqueda = '', string $orden = 'prioridad', int $pagina = 1, int $limite = 10): array {
     $offset = ($pagina - 1) * $limite;
 
     // Lista blanca de ordenamientos
@@ -61,7 +61,7 @@ function cobrador_contratos_paginado(int $id_personal, bool $soloAsignados = tru
     // Base del Query para WHERE y JOINs (Reutilizado para conteo y selección)
     $baseSql = "
         FROM futuro_contratos c
-        ". ($soloAsignados ? "INNER JOIN futuro_contrato_cobrador fc ON fc.id_contrato = c.id_contrato" : "") ."
+        ". ($soloAsignados ? "INNER JOIN futuro_contrato_cobrador fc ON fc.id_cont_cob=(SELECT MAX(fcx.id_cont_cob) FROM futuro_contrato_cobrador fcx WHERE fcx.id_contrato=c.id_contrato)" : "") ."
         LEFT JOIN vw_titular_contrato t ON t.id_contrato = c.id_contrato
         LEFT JOIN titular_contrato tc ON tc.id_contrato = c.id_contrato
         LEFT JOIN titular_dom td ON td.id_titular = tc.id_titular
@@ -73,8 +73,8 @@ function cobrador_contratos_paginado(int $id_personal, bool $soloAsignados = tru
 
     // 1. Filtros
     if ($soloAsignados) {
-        $baseSql .= " AND fc.id_personal = ?";
-        $params[] = $id_personal;
+        $baseSql .= " AND fc.id_usuario = ?";
+        $params[] = $id_usuario;
     }
 
     if (!empty($busqueda)) {
@@ -122,7 +122,7 @@ function cobrador_contratos_paginado(int $id_personal, bool $soloAsignados = tru
 /**
  * Obtiene la lista de contratos con filtros de búsqueda y ordenamiento
  */
-function cobrador_contratos(int $id_personal, bool $soloAsignados = true, string $busqueda = '', string $orden = 'prioridad'): array {
+function cobrador_contratos(int $id_usuario, bool $soloAsignados = true, string $busqueda = '', string $orden = 'prioridad'): array {
 
   // Lista blanca de ordenamientos permitidos para evitar inyección SQL
   $orderBySQL = match($orden) {
@@ -188,7 +188,7 @@ function cobrador_contratos(int $id_personal, bool $soloAsignados = true, string
       ) AS saldo_actual
 
     FROM futuro_contratos c
-    ". ($soloAsignados ? "INNER JOIN futuro_contrato_cobrador fc ON fc.id_contrato = c.id_contrato" : "") ."
+    ". ($soloAsignados ? "INNER JOIN futuro_contrato_cobrador fc ON fc.id_cont_cob=(SELECT MAX(fcx.id_cont_cob) FROM futuro_contrato_cobrador fcx WHERE fcx.id_contrato=c.id_contrato)" : "") ."
     LEFT JOIN vw_titular_contrato t ON t.id_contrato = c.id_contrato
     LEFT JOIN titular_contrato tc ON tc.id_contrato = c.id_contrato
     LEFT JOIN titular_dom td ON td.id_titular = tc.id_titular
@@ -200,8 +200,8 @@ function cobrador_contratos(int $id_personal, bool $soloAsignados = true, string
 
   // 1. Filtro de asignación (Solo mis contratos)
   if ($soloAsignados) {
-    $sql .= " AND fc.id_personal = ?";
-    $params[] = $id_personal;
+    $sql .= " AND fc.id_usuario = ?";
+    $params[] = $id_usuario;
   }
 
   // 2. Filtro de búsqueda (ID, Nombre del Titular o Dirección)
@@ -219,7 +219,7 @@ function cobrador_contratos(int $id_personal, bool $soloAsignados = true, string
   return qall($sql, $params);
 }
 
-function cobrador_registrar_gestion(int $id_contrato, ?float $monto, int $id_personal, float $lat, float $lng, ?string $fecha_proxima, ?string $notas): ?int {
+function cobrador_registrar_gestion(int $id_contrato, ?float $monto, int $id_usuario, float $lat, float $lng, ?string $fecha_proxima, ?string $notas): ?int {
   $pdo = db();
   try {
     $pdo->beginTransaction();
@@ -227,6 +227,9 @@ function cobrador_registrar_gestion(int $id_contrato, ?float $monto, int $id_per
     $id_abono = null;
     // Si hay monto, registramos el abono financiero
     if ($monto && $monto > 0) {
+      if (!futuros_promociones_condicion_contrato($id_contrato)) {
+        futuros_promociones_migrar_contrato_vigente($id_contrato);
+      }
 
       $calc = cobrador_saldo_contrato($pdo, $id_contrato, (float)$monto, true);
 
@@ -235,13 +238,14 @@ function cobrador_registrar_gestion(int $id_contrato, ?float $monto, int $id_per
       $id_abono = $pdo->lastInsertId();
 
       // Relacionar abono con cobrador
-      q("INSERT INTO futuro_abono_cobrador (id_abono, id_personal, fecha_registro)
-         VALUES (?,?,CURRENT_TIMESTAMP())", [$id_abono, $id_personal]);
+      q("INSERT INTO futuro_abono_cobrador (id_abono,id_usuario,fecha_registro)
+         VALUES (?,?,CURRENT_TIMESTAMP())", [$id_abono,$id_usuario]);
+      futuros_promociones_reconstruir_distribuciones($id_contrato);
     }
 
     // Registrar la gestión (visita)
-    q("INSERT INTO futuro_gestion (id_contrato, id_personal, cant_abono, latitud, longitud, fecha_proxima_visita, notas)
-       VALUES (?,?,?,?,?,?,?)", [$id_contrato, $id_personal, $monto, $lat, $lng, $fecha_proxima, $notas]);
+    q("INSERT INTO futuro_gestion (id_contrato,id_usuario,cant_abono,latitud,longitud,fecha_proxima_visita,notas)
+       VALUES (?,?,?,?,?,?,?)", [$id_contrato,$id_usuario,$monto,$lat,$lng,$fecha_proxima,$notas]);
     $id_gestion = $pdo->lastInsertId();
 
     $pdo->commit();
@@ -280,7 +284,30 @@ function cobrador_ticket_visita(string $titular, int $id_contrato, ?string $fech
 switch ($action) {
 
 case 'panel':
+  $idPersonalPanel = cobrador_personal_id();
+  $configCortePanel = cortes_cobradores_configuracion();
+  $periodoCortePanel = null;
+  $totalCortePanel = ['pagos'=>0,'contratos'=>0,'total'=>0.0];
+  if ($configCortePanel && $idPersonalPanel > 0) {
+    $periodoCortePanel = cortes_cobradores_periodo_actual($configCortePanel);
+    $totalCortePanel = cortes_cobradores_total_personal($periodoCortePanel, $idPersonalPanel);
+  }
   ob_start(); ?>
+  <?php if ($periodoCortePanel): ?>
+    <section class="border-top border-bottom py-3 mb-3">
+      <span class="text-muted small d-block">Acumulado del corte actual</span>
+      <strong class="display-6 d-block">$<?= number_format((float)$totalCortePanel['total'],2) ?></strong>
+      <div class="text-muted small mt-1">
+        <?= e(cortes_cobradores_formatear_limite($periodoCortePanel['inicio'])) ?> a <?= e(cortes_cobradores_formatear_limite($periodoCortePanel['fin'])) ?>
+      </div>
+      <div class="d-flex gap-4 mt-2 small">
+        <span><strong><?= (int)$totalCortePanel['pagos'] ?></strong> pagos</span>
+        <span><strong><?= (int)$totalCortePanel['contratos'] ?></strong> contratos</span>
+      </div>
+    </section>
+  <?php elseif ($idPersonalPanel > 0): ?>
+    <div class="alert alert-warning">El horario del corte semanal aun no esta configurado.</div>
+  <?php endif; ?>
   <div class="card shadow-sm">
     <div class="card-body">
       <h1 class="h4 mb-3">Panel del Cobrador</h1>
@@ -299,7 +326,7 @@ case 'panel':
   break;
 
 case 'contratos':
-  $id_personal = cobrador_personal_id();
+  $id_usuario = cobrador_personal_id();
   $filtro = ($_GET['filtro'] ?? '') === 'todos' ? false : true; 
 
   // Capturar parámetros
@@ -311,7 +338,7 @@ case 'contratos':
   $limite   = 12;
 
   // Llamada a la nueva función paginada
-  $resultado = cobrador_contratos_paginado($id_personal, $filtro, $busqueda, $orden, $pagina, $limite);
+  $resultado = cobrador_contratos_paginado($id_usuario, $filtro, $busqueda, $orden, $pagina, $limite);
   $rows = $resultado['rows'];
   $meta = $resultado['meta'];
 
@@ -496,9 +523,9 @@ case 'gestion':
     $lng = (float)($_POST['longitud'] ?? 0);
     $fecha_proxima = ($_POST['fecha_proxima_visita'] ?? '') ?: null;
     $notas = $_POST['notas'] ?? '';
-    $id_personal = cobrador_personal_id();
+    $id_usuario = cobrador_personal_id();
 
-    $id_resultado = cobrador_registrar_gestion($id_contrato, $monto, $id_personal, $lat, $lng, $fecha_proxima, $notas);
+    $id_resultado = cobrador_registrar_gestion($id_contrato, $monto, $id_usuario, $lat, $lng, $fecha_proxima, $notas);
 
     if ($monto && $id_resultado) {
         redirect('cobrador.ticket&id_abono='.$id_resultado);
@@ -519,7 +546,7 @@ case 'gestion':
     <div class="card-body">
       <div class="d-flex justify-content-between align-items-center mb-3">
           <h1 class="h5 m-0">Gestión Contrato #<?= e($id_contrato) ?></h1>
-          <a href="?r=cobrador.contratos" class="btn btn-sm btn-outline-secondary">Volver</a>
+          <button type="button" class="btn btn-secondary" onclick="history.back()">Volver</button>
       </div>
 
       <form method="post" action="?r=cobrador.gestion&id_contrato=<?= urlencode($id_contrato) ?>" id="formGestion">
@@ -567,7 +594,8 @@ case 'pagos':
     redirect('cobrador.contratos');
   }
 
-  $c = qone("SELECT c.id_contrato, c.costo_final, t.titular
+  // 1. Obtenemos el descuento del contrato
+  $c = qone("SELECT c.id_contrato, c.costo_final, c.descuento, t.titular
              FROM futuro_contratos c
              LEFT JOIN vw_titular_contrato t ON t.id_contrato=c.id_contrato
              WHERE c.id_contrato=? LIMIT 1", [$id_contrato]);
@@ -585,8 +613,12 @@ case 'pagos':
   ", [$id_contrato]);
 
   $sum = qone("SELECT COALESCE(SUM(cant_abono),0) AS total_pagado FROM futuro_abonos WHERE id_contrato=?", [$id_contrato]);
+  
   $total_pagado = (float)($sum['total_pagado'] ?? 0);
-  $costo_final = (float)($c['costo_final'] ?? 0);
+  $costo_final  = (float)($c['costo_final'] ?? 0);
+  $descuento    = (float)($c['descuento'] ?? 0); 
+  
+  // Calculamos el saldo global actual restando el descuento
   $saldo_calc = $costo_final - $total_pagado;
   if ($saldo_calc < 0) $saldo_calc = 0;
 
@@ -596,13 +628,16 @@ case 'pagos':
       <h1 class="h4 m-0">Pagos del contrato #<?= e($id_contrato) ?></h1>
       <div class="text-muted small">
         <span class="me-2"><strong>Titular:</strong> <?= e($c['titular'] ?? '—') ?></span>
-        <span class="me-2"><strong>Costo:</strong> $<?= number_format($costo_final, 2) ?></span>
+        <span class="me-2"><strong>Costo:</strong> $<?= number_format($costo_final+$descuento, 2) ?></span>
+        <?php if($descuento > 0): ?>
+            <span class="me-2 text-success"><strong>Desc:</strong> -$<?= number_format($descuento, 2) ?></span>
+        <?php endif; ?>
         <span class="me-2"><strong>Pagado:</strong> $<?= number_format($total_pagado, 2) ?></span>
-        <span><strong>Saldo:</strong> <span class="text-danger fw-semibold">$<?= number_format($saldo_calc, 2) ?></span></span>
+        <span><strong>Saldo Actual:</strong> <span class="text-danger fw-semibold">$<?= number_format($saldo_calc, 2) ?></span></span>
       </div>
     </div>
     <div>
-      <a href="?r=cobrador.contratos" class="btn btn-sm btn-outline-secondary">← Volver</a>
+      <button type="button" class="btn btn-secondary" onclick="history.back()">Volver</button>
     </div>
   </div>
 
@@ -615,17 +650,33 @@ case 'pagos':
               <th>Folio</th>
               <th>Fecha</th>
               <th class="text-end">Monto</th>
-              <th class="text-end">Saldo</th>
+              <th class="text-end">Saldo Restante</th>
               <th style="width:170px">Acciones</th>
             </tr>
           </thead>
           <tbody>
-          <?php foreach ($pagos as $p): ?>
+<?php 
+          // 1. Inicializamos un saldo dinámico tomando el Saldo Actual global
+          $saldo_dinamico = $saldo_calc; 
+
+          foreach ($pagos as $p): 
+            // 2. El saldo de esta fila es el saldo dinámico en este punto del tiempo
+            $saldo_fila = $saldo_dinamico; 
+            
+            // Evitamos negativos por si hay inconsistencias mayores
+            if ($saldo_fila < 0) $saldo_fila = 0;
+
+            // 3. Sumamos el abono actual para que la SIGUIENTE fila (que es un pago más antiguo) 
+            // tenga el saldo correcto antes de que se hiciera este pago.
+            $saldo_dinamico += (float)$p['cant_abono'];
+          ?>
             <tr>
               <td><small class="font-monospace">#<?= str_pad((string)$p['id_abono'], 6, '0', STR_PAD_LEFT) ?></small></td>
               <td><small><?= $p['fecha_registro'] ? date('d/m/Y H:i', strtotime($p['fecha_registro'])) : '—' ?></small></td>
               <td class="text-end"><small>$<?= number_format((float)$p['cant_abono'], 2) ?></small></td>
-              <td class="text-end"><small class="text-danger">$<?= number_format((float)$p['saldo'], 2) ?></small></td>
+              
+              <td class="text-end"><small class="text-danger">$<?= number_format($saldo_fila, 2) ?></small></td>
+              
               <td>
                 <div class="btn-group btn-group-sm">
                   <a href="?r=cobrador.ticket&id_abono=<?= (int)$p['id_abono'] ?>" class="btn btn-outline-primary" title="Reimprimir ticket">
@@ -659,7 +710,7 @@ case 'estado':
     redirect('cobrador.contratos');
   }
 
-  $c = qone("SELECT c.id_contrato, c.costo_final, c.estatus, t.titular,
+  $c = qone("SELECT c.id_contrato, c.costo_final,c.descuento, c.estatus, t.titular,
                     TRIM(CONCAT(
                       IFNULL(d.calle, ''), ' ',
                       IFNULL(CONCAT('#', d.num_ext), ''), ', ',
@@ -681,6 +732,7 @@ case 'estado':
   $sum = qone("SELECT COALESCE(SUM(cant_abono),0) AS total_pagado FROM futuro_abonos WHERE id_contrato=?", [$id_contrato]);
   $total_pagado = (float)($sum['total_pagado'] ?? 0);
   $costo_final = (float)($c['costo_final'] ?? 0);
+  $descuento = (float)($c['descuento'] ?? 0);
   $saldo_calc = $costo_final - $total_pagado;
   if ($saldo_calc < 0) $saldo_calc = 0;
 
@@ -692,10 +744,10 @@ case 'estado':
         a.cant_abono AS monto,
         a.saldo AS saldo,
         NULL AS notas,
-        COALESCE(CONCAT(p.nombre, ' ', p.apellido_p), '') AS responsable
+        COALESCE(p.nombre, '') AS responsable
      FROM futuro_abonos a
-     LEFT JOIN futuro_abono_cobrador fac ON fac.id_abono = a.id_abono
-     LEFT JOIN futuro_personal p ON p.id_personal = fac.id_personal
+     LEFT JOIN futuro_abono_cobrador fac ON fac.id_abono_cobrador=(SELECT MAX(facx.id_abono_cobrador) FROM futuro_abono_cobrador facx WHERE facx.id_abono=a.id_abono)
+     LEFT JOIN usuarios p ON p.id = fac.id_usuario
      WHERE a.id_contrato = ?
     )
     UNION ALL
@@ -706,9 +758,9 @@ case 'estado':
         COALESCE(g.cant_abono, 0) AS monto,
         NULL AS saldo,
         g.notas AS notas,
-        COALESCE(CONCAT(p2.nombre, ' ', p2.apellido_p), '') AS responsable
+        COALESCE(p2.nombre, '') AS responsable
      FROM futuro_gestion g
-     LEFT JOIN futuro_personal p2 ON p2.id_personal = g.id_personal
+     LEFT JOIN usuarios p2 ON p2.id = g.id_usuario
      WHERE g.id_contrato = ?
     )
     ORDER BY fecha DESC, folio DESC
@@ -734,15 +786,16 @@ case 'estado':
         <div><strong>Titular:</strong> <?= e($c['titular'] ?? '—') ?></div>
         <div><strong>Dirección:</strong> <?= e(trim((string)($c['direccion'] ?? '')) ?: '—') ?></div>
         <div class="mt-1">
-          <span class="me-2"><strong>Costo:</strong> $<?= number_format($costo_final, 2) ?></span>
-          <span class="me-2"><strong>Pagado:</strong> $<?= number_format($total_pagado, 2) ?></span>
+          <span class="me-2"><strong>Costo:</strong> $<?= number_format($costo_final+$descuento, 2) ?></span>
+          <span class="me-2"><strong>Descuento:</strong> $<?= number_format($descuento/2, 2) ?></span>
+
+          <span class="me-2"><strong>Pagado:</strong> $<?= number_format($total_pagado+($descuento/2), 2) ?></span>
           <span><strong>Saldo:</strong> <span class="text-danger fw-semibold">$<?= number_format($saldo_calc, 2) ?></span></span>
         </div>
       </div>
     </div>
 
     <div class="no-print d-flex gap-2">
-      
       <button onclick="window.print();" class="btn btn-sm btn-primary">🖨️ Imprimir</button>
     </div>
   </div>
@@ -763,31 +816,70 @@ case 'estado':
 
             </tr>
           </thead>
-          <tbody>
-          <?php foreach ($movs as $m): 
+<tbody>
+          <?php 
+          // 1. Iniciamos el contador con tu Saldo Actual real ($6,800 en tu ejemplo)
+          $saldo_dinamico = $saldo_calc; 
+
+          foreach ($movs as $m): 
             $tipo = $m['tipo'] ?? '';
             $is_abono = $tipo === 'abono';
+            
+            // 2. Este es el saldo que quedó DESPUÉS de hacer este movimiento
+            $saldo_mostrar = $saldo_dinamico;
+            
+            // 3. Preparamos el saldo para el SIGUIENTE ciclo (hacia el pasado).
+            // Solo sumamos el monto si fue un pago real (abono).
+            if ($is_abono) {
+                $saldo_dinamico += (float)($m['monto'] ?? 0);
+            }
           ?>
             <tr>
               <td><small><?= $m['fecha'] ? date('d/m/Y H:i', strtotime($m['fecha'])) : '—' ?></small></td>
               <td><small><?= $is_abono ? 'Pago' : 'Gestión' ?></small></td>
               <td><small class="font-monospace">#<?= str_pad((string)($m['folio'] ?? ''), 6, '0', STR_PAD_LEFT) ?></small></td>
-              <td class="text-end"><small>$<?= number_format((float)($m['monto'] ?? 0), 2) ?></small></td>
+              <td class="text-end"><small><?= $is_abono ? '$'.number_format((float)($m['monto'] ?? 0), 2) : '—' ?></small></td>
               <td class="text-end">
-                <small class="text-danger"><?= $is_abono ? '$'.number_format((float)($m['saldo'] ?? 0), 2) : '—' ?></small>
+                <small class="text-danger"><?= $is_abono ? '$'.number_format($saldo_mostrar, 2) : '—' ?></small>
               </td>
               <td><small class="text-muted"><?= e($m['notas'] ?? '—') ?></small></td>
               <td><small class="text-muted"><?= e(trim((string)($m['responsable'] ?? '')) ?: '—') ?></small></td>
-
-
             </tr>
           <?php endforeach; ?>
-
-          <?php if (empty($movs)): ?>
+            
             <tr>
-              <td colspan="8" class="text-center text-muted py-4">No hay movimientos para este contrato.</td>
+              <td><small></small></td>
+              <td><small></small>Descuento</td>
+              <td><small class="font-monospace"></small></td>
+
+              <?php 
+              if(!empty($descuento))
+              {
+                  if($descuento>=300) 
+                  { ?>
+                  <td class="text-end"><small><?php echo '$'.number_format((float)($descuento/2), 2); ?></small></td>
+                  <?php 
+                  }
+                  else
+                  {
+                    ?>
+                  <td class="text-end"><small><?php echo '$'.number_format((float)($descuento), 2); ?></small></td>
+                    <?php
+                  }
+              }
+              else {
+                  // Celda vacía para cuadrar si no hay descuento
+                  echo '<td class="text-end"></td>';
+              }
+              ?>
+
+              <td class="text-end">
+                <small class="text-danger"></small>
+              </td>
+              <td><small class="text-muted">$<?= number_format($costo_final, 2) ?></small></td>
+              <td><small class="text-muted"></small></td>
             </tr>
-          <?php endif; ?>
+
           </tbody>
         </table>
       </div>
@@ -813,25 +905,32 @@ case 'ticket':
         a.id_abono, a.fecha_registro, a.cant_abono,
         c.id_contrato, c.estatus, c.tipo_contrato, c.costo_final, c.tipo_pago,
         t.titular,
-        COALESCE(CONCAT(p.nombre, ' ', p.apellido_p), ?) AS nombre_cobrador,
+        COALESCE(p.nombre, ?) AS nombre_cobrador,
+        
+        -- TOTAL PAGADO HASTA ESE MOMENTO: Sumamos solo los abonos anteriores o iguales a este
         COALESCE((
           SELECT SUM(a2.cant_abono)
           FROM futuro_abonos a2
-          WHERE a2.id_contrato = c.id_contrato
-        ),0) AS total_pagado,
+          WHERE a2.id_contrato = c.id_contrato 
+            AND a2.id_abono <= a.id_abono
+        ),0) AS total_pagado_historico,
+        
+        -- SALDO RESTANTE EN ESE MOMENTO: Costo final menos lo pagado hasta ese momento
         GREATEST(
           c.costo_final - COALESCE((
             SELECT SUM(a3.cant_abono)
             FROM futuro_abonos a3
             WHERE a3.id_contrato = c.id_contrato
+              AND a3.id_abono <= a.id_abono
           ),0),
           0
-        ) AS saldo_actual
+        ) AS saldo_historico
+        
     FROM futuro_abonos a
     INNER JOIN futuro_contratos c ON c.id_contrato = a.id_contrato
     LEFT JOIN vw_titular_contrato t ON t.id_contrato = c.id_contrato
-    LEFT JOIN futuro_abono_cobrador fac ON fac.id_abono = a.id_abono
-    LEFT JOIN futuro_personal p ON p.id_personal = fac.id_personal
+    LEFT JOIN futuro_abono_cobrador fac ON fac.id_abono_cobrador=(SELECT MAX(facx.id_abono_cobrador) FROM futuro_abono_cobrador facx WHERE facx.id_abono=a.id_abono)
+    LEFT JOIN usuarios p ON p.id = fac.id_usuario
     WHERE a.id_abono = ?
     LIMIT 1
   ";
@@ -902,7 +1001,7 @@ case 'ticket':
 
           <div class="ticket-row">
             <span class="ticket-label">Saldo Restante:</span>
-            <span class="ticket-value text-danger">$<?= number_format((float)$data['saldo_actual'], 2) ?></span>
+            <span class="ticket-value text-danger">$<?= number_format((float)$data['saldo_historico'], 2) ?></span>
           </div>
 
           <div class="mt-4 text-center">
@@ -938,8 +1037,7 @@ case 'ticket':
           <button onclick="window.print();" class="btn btn-link w-100">
              🖨️ Imprimir en navegador
           </button>
-
-          <a href="?r=cobrador.contratos" class="btn btn-light w-100 mt-2">Volver al panel</a>
+          <button type="button" class="btn btn-secondary" onclick="history.back()">Volver</button>
       </div>
 
     </div>

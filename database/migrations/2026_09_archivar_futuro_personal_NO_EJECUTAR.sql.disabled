@@ -1,0 +1,4 @@
+-- Preparada para una etapa posterior de retiro definitivo.
+-- NO EJECUTAR durante la estabilizacion de Usuarios como fuente unica.
+-- Antes de habilitarla debe verificarse que no existan consultas operativas ni
+-- columnas id_personal en uso y conservarse un respaldo completo.
